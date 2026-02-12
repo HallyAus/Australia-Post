@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Australia Post MyPost Business",
+        "description": "Enter your MyPost Business credentials. Your password is used only for initial authentication and is not stored.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate with Australia Post",
+        "description": "Your session has expired. Please re-enter your credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "select_organisation": {
+        "title": "Select Organisation",
+        "description": "You have multiple organisations. Select which one to track.",
+        "data": {
+          "organisation": "Organisation"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "cannot_connect": "Unable to connect to Australia Post.",
+      "rate_limited": "Too many login attempts. Please wait and try again.",
+      "no_organisations": "No organisations found for this account.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Re-authentication successful."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "active_shipments": {
+        "name": "Active Shipments"
+      },
+      "delivered_shipments": {
+        "name": "Delivered Shipments"
+      },
+      "organisation_band": {
+        "name": "Organisation Band"
+      }
+    }
+  }
+}
