@@ -372,8 +372,10 @@ class AusPostAuth:
     ) -> str | None:
         """Attempt Auth0 New Universal Login flow.
 
-        POSTs to /u/login with form data. Returns auth code on success,
-        None if this endpoint is not available.
+        POSTs to /u/login with form data. Auth0 responds with a 302
+        redirect chain: first to /authorize/resume?state=..., then
+        to redirect_uri?code=... We must follow the chain to extract
+        the authorization code.
         """
         login_url = f"{AUTH0_LOGIN_URL}?state={urllib.parse.quote(state)}"
 
@@ -393,18 +395,16 @@ class AusPostAuth:
                     "Referer": login_url,
                 },
             ) as resp:
-                if resp.status == 401 or resp.status == 403:
-                    # Check response body for more specific error
-                    try:
-                        body = await resp.text()
-                        if "Wrong email or password" in body or "invalid" in body.lower():
-                            raise InvalidCredentialsError(
-                                "Invalid email or password"
-                            )
-                    except InvalidCredentialsError:
-                        raise
-                    except Exception:
-                        pass
+                _LOGGER.debug(
+                    "POST /u/login returned HTTP %s", resp.status
+                )
+
+                if resp.status in (401, 403):
+                    body = await resp.text()
+                    if "Wrong email or password" in body or "invalid" in body.lower():
+                        raise InvalidCredentialsError(
+                            "Invalid email or password"
+                        )
                     raise InvalidCredentialsError("Invalid email or password")
 
                 if resp.status == 429:
@@ -412,29 +412,46 @@ class AusPostAuth:
                         "Too many login attempts. Please wait and try again."
                     )
 
-                # On success, Auth0 redirects (302/303) to the redirect_uri
+                # On success, Auth0 responds with 302. The first hop is
+                # typically to /authorize/resume (NOT directly to
+                # redirect_uri with the code). We must follow the chain.
                 if resp.status in (301, 302, 303):
                     location = resp.headers.get("Location", "")
+                    _LOGGER.debug(
+                        "Login redirect to: %s",
+                        location[:100] if location else "<empty>",
+                    )
                     code = self._extract_code_from_redirect(location)
                     if code:
                         return code
+                    # Follow the Auth0 internal redirect chain
+                    if location:
+                        return await self._follow_redirect_chain(
+                            session, location
+                        )
 
-                # If we got a 200, the login page re-rendered (likely with error)
+                # If 200, the login page re-rendered (error or needs action)
                 if resp.status == 200:
                     body = await resp.text()
-                    if "Wrong email or password" in body:
+                    if (
+                        "Wrong email or password" in body
+                        or "wrong-credentials" in body
+                    ):
                         raise InvalidCredentialsError(
                             "Invalid email or password"
                         )
-                    # May need to follow a further redirect in the HTML
                     code = self._extract_code_from_html(body)
                     if code:
                         return code
-
-                    # Check for a resume URL or callback form
                     resume_url = self._extract_resume_url(body)
                     if resume_url:
-                        return await self._follow_resume(session, resume_url)
+                        return await self._follow_redirect_chain(
+                            session, resume_url
+                        )
+
+                _LOGGER.debug(
+                    "New UL login returned unexpected status %s", resp.status
+                )
 
         except (InvalidCredentialsError, RateLimitError):
             raise
@@ -520,23 +537,55 @@ class AusPostAuth:
             )
         return code
 
-    async def _follow_resume(
-        self, session: aiohttp.ClientSession, resume_url: str
+    async def _follow_redirect_chain(
+        self, session: aiohttp.ClientSession, url: str, max_hops: int = 10
     ) -> str:
-        """Follow a resume URL from Auth0 to complete the auth flow."""
-        async with session.get(
-            resume_url, allow_redirects=False
-        ) as resp:
-            if resp.status in (301, 302, 303):
-                location = resp.headers.get("Location", "")
-                code = self._extract_code_from_redirect(location)
-                if code:
-                    return code
-                # Follow another redirect
-                if location:
-                    return await self._follow_resume(session, location)
+        """Follow a redirect chain until we find the authorization code.
 
-        raise AuthenticationError("Could not extract auth code from resume flow")
+        After POST /u/login returns 302, Auth0 typically redirects to
+        /authorize/resume?state=... which then redirects to the
+        redirect_uri?code=...&state=... We follow each hop (without
+        leaving the Auth0 domain for the actual redirect_uri) and
+        extract the code from the final Location header.
+        """
+        for hop in range(max_hops):
+            _LOGGER.debug(
+                "Following redirect chain hop %d: %s",
+                hop + 1,
+                url[:100],
+            )
+            async with session.get(url, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303):
+                    location = resp.headers.get("Location", "")
+                    code = self._extract_code_from_redirect(location)
+                    if code:
+                        _LOGGER.debug(
+                            "Found auth code at redirect hop %d", hop + 1
+                        )
+                        return code
+                    if not location:
+                        break
+                    # Resolve relative URLs
+                    if location.startswith("/"):
+                        location = f"https://{AUTH0_DOMAIN}{location}"
+                    url = location
+                    continue
+
+                # Non-redirect response -- check for code in body
+                if resp.status == 200:
+                    body = await resp.text()
+                    code = self._extract_code_from_html(body)
+                    if code:
+                        return code
+                    resume_url = self._extract_resume_url(body)
+                    if resume_url:
+                        url = resume_url
+                        continue
+                break
+
+        raise AuthenticationError(
+            "Could not extract authorization code from Auth0 redirect chain"
+        )
 
     async def _exchange_code_for_tokens(
         self,

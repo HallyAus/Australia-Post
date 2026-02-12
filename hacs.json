@@ -1,5 +1,6 @@
 {
   "name": "Australia Post MyPost Business",
+  "homeassistant": "2024.1.0",
   "render_readme": true,
   "country": ["AU"]
 }
