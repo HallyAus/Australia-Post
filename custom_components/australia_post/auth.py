@@ -157,11 +157,11 @@ class AusPostAuth:
         # Try ROPC first (simpler, but may not be enabled for SPA clients)
         ropc_result = await self._try_ropc_login(email, password)
         if ropc_result is not None:
-            _LOGGER.debug("ROPC login succeeded")
+            _LOGGER.warning("AusPost login: ROPC succeeded")
             self._update_tokens(ropc_result)
             return ropc_result
 
-        _LOGGER.debug("ROPC not available, using browser simulation flow")
+        _LOGGER.warning("AusPost login: ROPC not available, trying browser flow")
         return await self._browser_simulation_login(email, password)
 
     async def _try_ropc_login(
@@ -187,6 +187,7 @@ class AusPostAuth:
             async with self._session.post(
                 AUTH0_TOKEN_URL, json=payload, headers=headers
             ) as resp:
+                _LOGGER.warning("AusPost ROPC: HTTP %s", resp.status)
                 if resp.status == 403:
                     # ROPC not enabled for this client
                     return None
@@ -199,10 +200,17 @@ class AusPostAuth:
                     data["expires_at"] = time.time() + data.get("expires_in", 1800)
                     return data
                 # Other errors mean ROPC is not available
+                body = await resp.text()
+                _LOGGER.warning(
+                    "AusPost ROPC: unexpected HTTP %s: %s",
+                    resp.status,
+                    body[:500],
+                )
                 return None
         except (InvalidCredentialsError, RateLimitError):
             raise
-        except aiohttp.ClientError:
+        except aiohttp.ClientError as err:
+            _LOGGER.warning("AusPost ROPC: connection error: %s", err)
             return None
 
     async def _browser_simulation_login(
@@ -227,29 +235,43 @@ class AusPostAuth:
         try:
             # Step 1: Generate PKCE parameters
             code_verifier, code_challenge = self._generate_pkce()
+            _LOGGER.warning("AusPost browser flow: step 1 PKCE generated")
 
             # Step 2: Initiate authorize flow
             state = await self._initiate_authorize(auth_session, code_challenge)
-            _LOGGER.debug("Auth0 authorize flow initiated, got state")
+            _LOGGER.warning(
+                "AusPost browser flow: step 2 authorize done, state=%s",
+                state[:20] if state else "<none>",
+            )
 
             # Step 3: Post credentials
             auth_code = await self._post_credentials(
                 auth_session, email, password, state
             )
-            _LOGGER.debug("Credentials accepted, got auth code")
+            _LOGGER.warning(
+                "AusPost browser flow: step 3 got auth code=%s",
+                _mask_token(auth_code),
+            )
 
             # Step 4: Exchange code for tokens
             tokens = await self._exchange_code_for_tokens(
                 auth_session, auth_code, code_verifier
             )
-            _LOGGER.debug(
-                "Token exchange succeeded, access_token=%s",
+            _LOGGER.warning(
+                "AusPost browser flow: step 4 token exchange OK, access_token=%s",
                 _mask_token(tokens.get("access_token")),
             )
 
             self._update_tokens(tokens)
             return tokens
 
+        except Exception as err:
+            _LOGGER.warning(
+                "AusPost browser flow FAILED: %s: %s",
+                type(err).__name__,
+                err,
+            )
+            raise
         finally:
             await auth_session.close()
 
@@ -298,16 +320,37 @@ class AusPostAuth:
         async with session.get(
             AUTH0_AUTHORIZE_URL, params=params, allow_redirects=True
         ) as resp:
+            _LOGGER.warning(
+                "AusPost authorize: HTTP %s, final URL: %s",
+                resp.status,
+                str(resp.url)[:120],
+            )
             if resp.status != 200:
+                body = await resp.text()
+                _LOGGER.warning(
+                    "AusPost authorize: non-200 body: %s", body[:500]
+                )
                 raise AuthenticationError(
                     f"Failed to initiate auth flow (HTTP {resp.status})"
                 )
             html = await resp.text()
             final_url = str(resp.url)
 
+        _LOGGER.warning(
+            "AusPost authorize: page title: %s, body length: %d",
+            (re.search(r"<title>(.*?)</title>", html, re.IGNORECASE) or [None, "unknown"])[1],
+            len(html),
+        )
+
         # Extract state from the URL query params or the HTML page
         state = self._extract_state(final_url, html)
         if not state:
+            _LOGGER.warning(
+                "AusPost authorize: could not find state in URL or HTML. "
+                "URL: %s, HTML preview: %s",
+                final_url[:200],
+                html[:500],
+            )
             raise AuthenticationError(
                 "Could not extract state from Auth0 login page"
             )
@@ -399,12 +442,16 @@ class AusPostAuth:
                     "Accept-Language": "en-AU,en;q=0.9",
                 },
             ) as resp:
-                _LOGGER.debug(
-                    "POST /u/login returned HTTP %s", resp.status
+                _LOGGER.warning(
+                    "AusPost POST /u/login: HTTP %s", resp.status
                 )
 
                 if resp.status in (401, 403):
                     body = await resp.text()
+                    _LOGGER.warning(
+                        "AusPost POST /u/login: 401/403 body: %s",
+                        body[:500],
+                    )
                     if "Wrong email or password" in body or "invalid" in body.lower():
                         raise InvalidCredentialsError(
                             "Invalid email or password"
@@ -421,9 +468,9 @@ class AusPostAuth:
                 # redirect_uri with the code). We must follow the chain.
                 if resp.status in (301, 302, 303):
                     location = resp.headers.get("Location", "")
-                    _LOGGER.debug(
-                        "Login redirect to: %s",
-                        location[:100] if location else "<empty>",
+                    _LOGGER.warning(
+                        "AusPost POST /u/login: redirect to: %s",
+                        location[:200] if location else "<empty>",
                     )
                     code = self._extract_code_from_redirect(location)
                     if code:
@@ -437,6 +484,12 @@ class AusPostAuth:
                 # If 200, the login page re-rendered (error or needs action)
                 if resp.status == 200:
                     body = await resp.text()
+                    _LOGGER.warning(
+                        "AusPost POST /u/login: got 200 (page re-rendered), "
+                        "body length=%d, preview: %s",
+                        len(body),
+                        body[:500],
+                    )
                     if (
                         "Wrong email or password" in body
                         or "wrong-credentials" in body
@@ -449,21 +502,27 @@ class AusPostAuth:
                         return code
                     resume_url = self._extract_resume_url(body)
                     if resume_url:
+                        _LOGGER.warning(
+                            "AusPost POST /u/login: found resume URL: %s",
+                            resume_url[:200],
+                        )
                         return await self._follow_redirect_chain(
                             session, resume_url
                         )
 
                 body = await resp.text()
-                _LOGGER.debug(
-                    "New UL login returned unexpected status %s: %s",
+                _LOGGER.warning(
+                    "AusPost POST /u/login: unexpected status %s, body: %s",
                     resp.status,
-                    body[:300],
+                    body[:500],
                 )
 
         except (InvalidCredentialsError, RateLimitError):
             raise
         except aiohttp.ClientError as err:
-            _LOGGER.debug("New UL request failed: %s", err)
+            _LOGGER.warning(
+                "AusPost POST /u/login: connection error: %s", err
+            )
             return None
 
         return None
@@ -495,6 +554,7 @@ class AusPostAuth:
             "state": state,
         }
 
+        _LOGGER.warning("AusPost classic login: POST /usernamepassword/login")
         async with session.post(
             login_url,
             json=payload,
@@ -504,6 +564,9 @@ class AusPostAuth:
                 "Origin": f"https://{AUTH0_DOMAIN}",
             },
         ) as resp:
+            _LOGGER.warning(
+                "AusPost classic login: HTTP %s", resp.status
+            )
             if resp.status == 401:
                 raise InvalidCredentialsError("Invalid email or password")
             if resp.status == 429:
@@ -511,11 +574,20 @@ class AusPostAuth:
                     "Too many login attempts. Please wait and try again."
                 )
             if resp.status != 200:
+                body = await resp.text()
+                _LOGGER.warning(
+                    "AusPost classic login: failed HTTP %s: %s",
+                    resp.status,
+                    body[:500],
+                )
                 raise AuthenticationError(
                     f"Classic login failed (HTTP {resp.status})"
                 )
             html = await resp.text()
 
+        _LOGGER.warning(
+            "AusPost classic login: got response, length=%d", len(html)
+        )
         # Parse the WS-Fed callback form
         wa, wresult, wctx = self._parse_callback_form(html)
 
@@ -556,18 +628,29 @@ class AusPostAuth:
         extract the code from the final Location header.
         """
         for hop in range(max_hops):
-            _LOGGER.debug(
-                "Following redirect chain hop %d: %s",
+            _LOGGER.warning(
+                "AusPost redirect chain hop %d: GET %s",
                 hop + 1,
-                url[:100],
+                url[:200],
             )
             async with session.get(url, allow_redirects=False) as resp:
+                _LOGGER.warning(
+                    "AusPost redirect chain hop %d: HTTP %s",
+                    hop + 1,
+                    resp.status,
+                )
                 if resp.status in (301, 302, 303):
                     location = resp.headers.get("Location", "")
+                    _LOGGER.warning(
+                        "AusPost redirect chain hop %d: Location: %s",
+                        hop + 1,
+                        location[:200] if location else "<empty>",
+                    )
                     code = self._extract_code_from_redirect(location)
                     if code:
-                        _LOGGER.debug(
-                            "Found auth code at redirect hop %d", hop + 1
+                        _LOGGER.warning(
+                            "AusPost redirect chain: found auth code at hop %d",
+                            hop + 1,
                         )
                         return code
                     if not location:
