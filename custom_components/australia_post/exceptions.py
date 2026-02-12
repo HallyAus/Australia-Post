@@ -19,6 +19,10 @@ class TokenExpiredError(AuthenticationError):
     """Access or refresh token has expired."""
 
 
+class CloudflareBlockedError(AuthenticationError):
+    """Blocked by Cloudflare bot protection."""
+
+
 class RateLimitError(AusPostError):
     """API rate limit exceeded."""
 

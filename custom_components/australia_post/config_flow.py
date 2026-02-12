@@ -27,6 +27,7 @@ from .const import (
 )
 from .exceptions import (
     AuthenticationError,
+    CloudflareBlockedError,
     InvalidCredentialsError,
     RateLimitError,
 )
@@ -111,6 +112,11 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
             except RateLimitError as err:
                 _LOGGER.warning("AusPost login: rate limited: %s", err)
                 errors["base"] = "rate_limited"
+            except CloudflareBlockedError as err:
+                _LOGGER.warning(
+                    "AusPost login: Cloudflare blocked: %s", err
+                )
+                errors["base"] = "cloudflare_blocked"
             except AuthenticationError as err:
                 _LOGGER.warning(
                     "AusPost login: auth error: %s: %s",
@@ -210,6 +216,11 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
             except RateLimitError as err:
                 _LOGGER.warning("AusPost reauth: rate limited: %s", err)
                 errors["base"] = "rate_limited"
+            except CloudflareBlockedError as err:
+                _LOGGER.warning(
+                    "AusPost reauth: Cloudflare blocked: %s", err
+                )
+                errors["base"] = "cloudflare_blocked"
             except AuthenticationError as err:
                 _LOGGER.warning(
                     "AusPost reauth: auth error: %s: %s",
