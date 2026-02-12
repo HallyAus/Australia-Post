@@ -1,0 +1,12 @@
+{
+  "domain": "australia_post",
+  "name": "Australia Post MyPost Business",
+  "codeowners": ["@HallyAus"],
+  "config_flow": true,
+  "documentation": "https://github.com/HallyAus/Australia-Post",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/HallyAus/Australia-Post/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}
