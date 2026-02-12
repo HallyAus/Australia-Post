@@ -105,13 +105,25 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._organisations = organisations
                     return await self.async_step_select_organisation()
 
-            except InvalidCredentialsError:
+            except InvalidCredentialsError as err:
+                _LOGGER.warning("AusPost login: invalid credentials: %s", err)
                 errors["base"] = "invalid_auth"
-            except RateLimitError:
+            except RateLimitError as err:
+                _LOGGER.warning("AusPost login: rate limited: %s", err)
                 errors["base"] = "rate_limited"
-            except AuthenticationError:
+            except AuthenticationError as err:
+                _LOGGER.warning(
+                    "AusPost login: auth error: %s: %s",
+                    type(err).__name__,
+                    err,
+                )
                 errors["base"] = "cannot_connect"
-            except aiohttp.ClientError:
+            except aiohttp.ClientError as err:
+                _LOGGER.warning(
+                    "AusPost login: connection error: %s: %s",
+                    type(err).__name__,
+                    err,
+                )
                 errors["base"] = "cannot_connect"
             except Exception:
                 _LOGGER.exception("Unexpected error during authentication")
@@ -192,13 +204,25 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_EXPIRES_AT: tokens["expires_at"],
                     },
                 )
-            except InvalidCredentialsError:
+            except InvalidCredentialsError as err:
+                _LOGGER.warning("AusPost reauth: invalid credentials: %s", err)
                 errors["base"] = "invalid_auth"
-            except RateLimitError:
+            except RateLimitError as err:
+                _LOGGER.warning("AusPost reauth: rate limited: %s", err)
                 errors["base"] = "rate_limited"
-            except AuthenticationError:
+            except AuthenticationError as err:
+                _LOGGER.warning(
+                    "AusPost reauth: auth error: %s: %s",
+                    type(err).__name__,
+                    err,
+                )
                 errors["base"] = "cannot_connect"
-            except aiohttp.ClientError:
+            except aiohttp.ClientError as err:
+                _LOGGER.warning(
+                    "AusPost reauth: connection error: %s: %s",
+                    type(err).__name__,
+                    err,
+                )
                 errors["base"] = "cannot_connect"
             except Exception:
                 _LOGGER.exception("Unexpected error during re-authentication")
