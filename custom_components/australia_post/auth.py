@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import functools
 import hashlib
 import json
 import logging
@@ -28,6 +30,7 @@ from .const import (
 )
 from .exceptions import (
     AuthenticationError,
+    CloudflareBlockedError,
     InvalidCredentialsError,
     RateLimitError,
     TokenExpiredError,
@@ -45,6 +48,52 @@ _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/144.0.0.0 Safari/537.36"
+)
+
+# Comprehensive browser headers to reduce bot-detection triggers
+_BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": _USER_AGENT,
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8,"
+        "application/signed-exchange;v=b3;q=0.7"
+    ),
+    "Accept-Language": "en-AU,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Sec-Ch-Ua": '"Chromium";v="144", "Not A(Brand";v="99", "Google Chrome";v="144"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Upgrade-Insecure-Requests": "1",
+}
+
+# Headers for top-level navigation (GET /authorize)
+_NAV_HEADERS: dict[str, str] = {
+    **_BROWSER_HEADERS,
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
+# Headers for same-origin form POST (POST /u/login)
+_FORM_POST_HEADERS: dict[str, str] = {
+    **_BROWSER_HEADERS,
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+}
+
+# Markers that identify a Cloudflare challenge page
+_CF_MARKERS = (
+    "Please enable JS and disable any ad blocker",
+    "data-cfasync",
+    "cf-browser-verification",
+    "challenges.cloudflare.com",
+    "cf_chl_opt",
+    "just a moment",
 )
 
 
@@ -218,18 +267,33 @@ class AusPostAuth:
     ) -> dict[str, Any]:
         """Perform the full Auth0 New Universal Login flow.
 
-        Steps:
-        1. Generate PKCE code_verifier and code_challenge
-        2. GET /authorize to initiate the flow and get the login page
-        3. POST credentials to /u/login
-        4. Extract auth code from redirect
-        5. Exchange code for tokens
+        Tries aiohttp with comprehensive browser headers first. If Cloudflare
+        bot protection is detected, falls back to cloudscraper which can solve
+        Cloudflare challenges.
         """
-        # Create a dedicated session with cookie support for the login flow
+        # Try aiohttp first (async, fast)
+        try:
+            return await self._browser_login_aiohttp(email, password)
+        except CloudflareBlockedError:
+            _LOGGER.warning(
+                "AusPost: Cloudflare blocked aiohttp, "
+                "falling back to cloudscraper"
+            )
+
+        # Fall back to cloudscraper (sync, runs in executor)
+        return await self._browser_login_cloudscraper(email, password)
+
+    async def _browser_login_aiohttp(
+        self, email: str, password: str
+    ) -> dict[str, Any]:
+        """Perform browser login using aiohttp with comprehensive headers.
+
+        Raises CloudflareBlockedError if Cloudflare bot protection is detected.
+        """
         jar = aiohttp.CookieJar(unsafe=True)
         auth_session = aiohttp.ClientSession(
             cookie_jar=jar,
-            headers={"User-Agent": _USER_AGENT},
+            headers=_BROWSER_HEADERS,
         )
 
         try:
@@ -265,6 +329,8 @@ class AusPostAuth:
             self._update_tokens(tokens)
             return tokens
 
+        except CloudflareBlockedError:
+            raise
         except Exception as err:
             _LOGGER.warning(
                 "AusPost browser flow FAILED: %s: %s",
@@ -274,6 +340,356 @@ class AusPostAuth:
             raise
         finally:
             await auth_session.close()
+
+    # ------------------------------------------------------------------
+    # cloudscraper fallback (synchronous, run in executor)
+    # ------------------------------------------------------------------
+
+    async def _browser_login_cloudscraper(
+        self, email: str, password: str
+    ) -> dict[str, Any]:
+        """Perform browser login via cloudscraper to bypass Cloudflare.
+
+        cloudscraper is synchronous so we run it in an executor thread.
+        """
+        try:
+            import cloudscraper as _cs  # noqa: F401
+        except ImportError:
+            raise AuthenticationError(
+                "Cloudflare bot protection detected but 'cloudscraper' is not "
+                "installed. Restart Home Assistant so the dependency is "
+                "installed automatically, or run: pip install cloudscraper"
+            )
+
+        loop = asyncio.get_running_loop()
+        tokens = await loop.run_in_executor(
+            None,
+            functools.partial(self._sync_browser_login, email, password),
+        )
+        self._update_tokens(tokens)
+        return tokens
+
+    def _sync_browser_login(
+        self, email: str, password: str
+    ) -> dict[str, Any]:
+        """Full Auth0 login flow using cloudscraper (synchronous)."""
+        import cloudscraper
+
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False},
+        )
+        scraper.headers.update(_BROWSER_HEADERS)
+
+        _LOGGER.warning("AusPost cloudscraper: starting login flow")
+
+        # Step 1: PKCE
+        code_verifier, code_challenge = self._generate_pkce()
+
+        # Step 2: GET /authorize
+        nonce = (
+            base64.urlsafe_b64encode(secrets.token_bytes(32))
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        params = {
+            "client_id": AUTH0_CLIENT_ID,
+            "response_type": "code",
+            "redirect_uri": AUTH0_REDIRECT_URI,
+            "scope": AUTH0_SCOPES,
+            "audience": AUTH0_AUDIENCE,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "nonce": nonce,
+            "auth0Client": _AUTH0_CLIENT_INFO,
+        }
+
+        resp = scraper.get(
+            AUTH0_AUTHORIZE_URL, params=params, headers=_NAV_HEADERS
+        )
+        _LOGGER.warning(
+            "AusPost cloudscraper authorize: HTTP %s, URL: %s",
+            resp.status_code,
+            str(resp.url)[:120],
+        )
+
+        if resp.status_code != 200:
+            body = resp.text[:500]
+            _LOGGER.warning(
+                "AusPost cloudscraper authorize: non-200 body: %s", body
+            )
+            if self._is_cloudflare_challenge(resp.status_code, resp.text):
+                raise CloudflareBlockedError(
+                    "Cloudflare blocked the request even with cloudscraper. "
+                    "Australia Post may have upgraded their bot protection."
+                )
+            raise AuthenticationError(
+                f"authorize failed via cloudscraper (HTTP {resp.status_code})"
+            )
+
+        state = self._extract_state(str(resp.url), resp.text)
+        if not state:
+            _LOGGER.warning(
+                "AusPost cloudscraper: could not find state. URL: %s, "
+                "HTML preview: %s",
+                str(resp.url)[:200],
+                resp.text[:500],
+            )
+            raise AuthenticationError(
+                "Could not extract state from Auth0 login page (cloudscraper)"
+            )
+
+        _LOGGER.warning(
+            "AusPost cloudscraper: authorize OK, state=%s",
+            state[:20],
+        )
+
+        # Step 3: POST credentials to /u/login
+        login_url = f"{AUTH0_LOGIN_URL}?state={urllib.parse.quote(state)}"
+        payload = urllib.parse.urlencode(
+            {
+                "state": state,
+                "username": email,
+                "password": password,
+                "action": "default",
+            }
+        )
+
+        post_headers = {
+            **_FORM_POST_HEADERS,
+            "Origin": f"https://{AUTH0_DOMAIN}",
+            "Referer": login_url,
+        }
+
+        resp = scraper.post(
+            login_url,
+            data=payload,
+            headers=post_headers,
+            allow_redirects=False,
+        )
+        _LOGGER.warning(
+            "AusPost cloudscraper POST /u/login: HTTP %s", resp.status_code
+        )
+
+        auth_code = self._handle_login_response_sync(scraper, resp)
+
+        if not auth_code:
+            # Try Classic Universal Login as fallback
+            auth_code = self._sync_classic_login(
+                scraper, email, password, state
+            )
+
+        if not auth_code:
+            raise AuthenticationError(
+                "Could not obtain authorization code via cloudscraper"
+            )
+
+        _LOGGER.warning(
+            "AusPost cloudscraper: got auth code=%s", _mask_token(auth_code)
+        )
+
+        # Step 4: Exchange code for tokens
+        token_payload = {
+            "grant_type": "authorization_code",
+            "client_id": AUTH0_CLIENT_ID,
+            "code_verifier": code_verifier,
+            "code": auth_code,
+            "redirect_uri": AUTH0_REDIRECT_URI,
+        }
+
+        resp = scraper.post(
+            AUTH0_TOKEN_URL,
+            json=token_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Auth0-Client": _AUTH0_CLIENT_INFO,
+            },
+        )
+
+        if resp.status_code != 200:
+            _LOGGER.error(
+                "AusPost cloudscraper token exchange: HTTP %s: %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+            raise AuthenticationError(
+                f"Token exchange failed via cloudscraper (HTTP {resp.status_code})"
+            )
+
+        data = resp.json()
+        data["expires_at"] = time.time() + data.get("expires_in", 1800)
+        _LOGGER.warning(
+            "AusPost cloudscraper: login complete, access_token=%s",
+            _mask_token(data.get("access_token")),
+        )
+        return data
+
+    def _handle_login_response_sync(
+        self, scraper: Any, resp: Any
+    ) -> str | None:
+        """Process the /u/login response synchronously (cloudscraper)."""
+        if resp.status_code in (401, 403):
+            body = resp.text
+            if "Wrong email or password" in body or "invalid" in body.lower():
+                raise InvalidCredentialsError("Invalid email or password")
+            raise InvalidCredentialsError("Invalid email or password")
+
+        if resp.status_code == 429:
+            raise RateLimitError(
+                "Too many login attempts. Please wait and try again."
+            )
+
+        if resp.status_code in (301, 302, 303):
+            location = resp.headers.get("Location", "")
+            _LOGGER.warning(
+                "AusPost cloudscraper /u/login: redirect to: %s",
+                location[:200] if location else "<empty>",
+            )
+            code = self._extract_code_from_redirect(location)
+            if code:
+                return code
+            if location:
+                return self._sync_follow_redirects(scraper, location)
+
+        if resp.status_code == 200:
+            body = resp.text
+            if (
+                "Wrong email or password" in body
+                or "wrong-credentials" in body
+            ):
+                raise InvalidCredentialsError("Invalid email or password")
+            code = self._extract_code_from_html(body)
+            if code:
+                return code
+            resume_url = self._extract_resume_url(body)
+            if resume_url:
+                return self._sync_follow_redirects(scraper, resume_url)
+
+        return None
+
+    def _sync_classic_login(
+        self,
+        scraper: Any,
+        email: str,
+        password: str,
+        state: str,
+    ) -> str | None:
+        """Attempt Classic Universal Login via cloudscraper."""
+        login_url = f"https://{AUTH0_DOMAIN}/usernamepassword/login"
+        payload = {
+            "client_id": AUTH0_CLIENT_ID,
+            "redirect_uri": AUTH0_REDIRECT_URI,
+            "tenant": "prod.auspost",
+            "response_type": "code",
+            "scope": AUTH0_SCOPES,
+            "audience": AUTH0_AUDIENCE,
+            "connection": AUTH0_CONNECTION,
+            "username": email,
+            "password": password,
+            "state": state,
+        }
+
+        _LOGGER.warning(
+            "AusPost cloudscraper: classic login POST /usernamepassword/login"
+        )
+        resp = scraper.post(
+            login_url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Auth0-Client": _AUTH0_CLIENT_INFO,
+                "Origin": f"https://{AUTH0_DOMAIN}",
+            },
+        )
+        _LOGGER.warning(
+            "AusPost cloudscraper classic login: HTTP %s", resp.status_code
+        )
+
+        if resp.status_code == 401:
+            raise InvalidCredentialsError("Invalid email or password")
+        if resp.status_code == 429:
+            raise RateLimitError(
+                "Too many login attempts. Please wait and try again."
+            )
+        if resp.status_code != 200:
+            return None
+
+        html = resp.text
+        try:
+            wa, wresult, wctx = self._parse_callback_form(html)
+        except AuthenticationError:
+            return None
+
+        callback_url = f"https://{AUTH0_DOMAIN}/login/callback"
+        resp = scraper.post(
+            callback_url,
+            data={"wa": wa, "wresult": wresult, "wctx": wctx},
+            allow_redirects=False,
+        )
+        if resp.status_code not in (301, 302, 303):
+            return None
+
+        location = resp.headers.get("Location", "")
+        code = self._extract_code_from_redirect(location)
+        if code:
+            return code
+        if location:
+            return self._sync_follow_redirects(scraper, location)
+        return None
+
+    def _sync_follow_redirects(
+        self, scraper: Any, url: str, max_hops: int = 10
+    ) -> str:
+        """Follow redirect chain using cloudscraper."""
+        for hop in range(max_hops):
+            _LOGGER.warning(
+                "AusPost cloudscraper redirect hop %d: GET %s",
+                hop + 1,
+                url[:200],
+            )
+            resp = scraper.get(url, allow_redirects=False)
+            _LOGGER.warning(
+                "AusPost cloudscraper redirect hop %d: HTTP %s",
+                hop + 1,
+                resp.status_code,
+            )
+
+            if resp.status_code in (301, 302, 303):
+                location = resp.headers.get("Location", "")
+                code = self._extract_code_from_redirect(location)
+                if code:
+                    return code
+                if not location:
+                    break
+                if location.startswith("/"):
+                    location = f"https://{AUTH0_DOMAIN}{location}"
+                url = location
+                continue
+
+            if resp.status_code == 200:
+                code = self._extract_code_from_html(resp.text)
+                if code:
+                    return code
+                resume_url = self._extract_resume_url(resp.text)
+                if resume_url:
+                    url = resume_url
+                    continue
+            break
+
+        raise AuthenticationError(
+            "Could not extract auth code from redirect chain (cloudscraper)"
+        )
+
+    # ------------------------------------------------------------------
+    # Cloudflare detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_cloudflare_challenge(status_code: int, body: str) -> bool:
+        """Detect whether an HTTP response is a Cloudflare challenge page."""
+        if status_code not in (403, 503):
+            return False
+        body_lower = body.lower()
+        return any(marker.lower() in body_lower for marker in _CF_MARKERS)
 
     @staticmethod
     def _generate_pkce() -> tuple[str, str]:
@@ -318,7 +734,10 @@ class AusPostAuth:
         }
 
         async with session.get(
-            AUTH0_AUTHORIZE_URL, params=params, allow_redirects=True
+            AUTH0_AUTHORIZE_URL,
+            params=params,
+            allow_redirects=True,
+            headers=_NAV_HEADERS,
         ) as resp:
             _LOGGER.warning(
                 "AusPost authorize: HTTP %s, final URL: %s",
@@ -330,6 +749,11 @@ class AusPostAuth:
                 _LOGGER.warning(
                     "AusPost authorize: non-200 body: %s", body[:500]
                 )
+                if self._is_cloudflare_challenge(resp.status, body):
+                    raise CloudflareBlockedError(
+                        "Cloudflare bot protection blocked the authorize "
+                        f"request (HTTP {resp.status})"
+                    )
                 raise AuthenticationError(
                     f"Failed to initiate auth flow (HTTP {resp.status})"
                 )
@@ -435,11 +859,9 @@ class AusPostAuth:
                 data=payload,
                 allow_redirects=False,
                 headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
+                    **_FORM_POST_HEADERS,
                     "Origin": f"https://{AUTH0_DOMAIN}",
                     "Referer": login_url,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-AU,en;q=0.9",
                 },
             ) as resp:
                 _LOGGER.warning(

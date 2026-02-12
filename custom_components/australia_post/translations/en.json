@@ -28,6 +28,7 @@
     "error": {
       "invalid_auth": "Invalid email or password.",
       "cannot_connect": "Unable to connect to Australia Post.",
+      "cloudflare_blocked": "Australia Post login blocked by Cloudflare bot protection. Please try again later or check the integration logs for details.",
       "rate_limited": "Too many login attempts. Please wait and try again.",
       "no_organisations": "No organisations found for this account.",
       "unknown": "An unexpected error occurred."

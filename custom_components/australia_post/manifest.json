@@ -8,6 +8,6 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/HallyAus/Australia-Post/issues",
-  "requirements": [],
+  "requirements": ["cloudscraper>=1.2.71"],
   "version": "1.0.0"
 }
