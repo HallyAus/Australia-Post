@@ -379,11 +379,12 @@ class AusPostAuth:
         """
         login_url = f"{AUTH0_LOGIN_URL}?state={urllib.parse.quote(state)}"
 
-        payload = aiohttp.FormData()
-        payload.add_field("state", state)
-        payload.add_field("username", email)
-        payload.add_field("password", password)
-        payload.add_field("action", "default")
+        payload = urllib.parse.urlencode({
+            "state": state,
+            "username": email,
+            "password": password,
+            "action": "default",
+        })
 
         try:
             async with session.post(
@@ -391,8 +392,11 @@ class AusPostAuth:
                 data=payload,
                 allow_redirects=False,
                 headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
                     "Origin": f"https://{AUTH0_DOMAIN}",
                     "Referer": login_url,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-AU,en;q=0.9",
                 },
             ) as resp:
                 _LOGGER.debug(
@@ -449,8 +453,11 @@ class AusPostAuth:
                             session, resume_url
                         )
 
+                body = await resp.text()
                 _LOGGER.debug(
-                    "New UL login returned unexpected status %s", resp.status
+                    "New UL login returned unexpected status %s: %s",
+                    resp.status,
+                    body[:300],
                 )
 
         except (InvalidCredentialsError, RateLimitError):
