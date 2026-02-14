@@ -63,13 +63,18 @@ class AusPostApiClient:
         method: str,
         path: str,
         params: dict[str, str] | None = None,
+        _retried: bool = False,
     ) -> Any:
         """Make an authenticated API request.
+
+        On a 401 response, forces a token refresh and retries once before
+        raising an error.
 
         Args:
             method: HTTP method.
             path: API path (appended to base URL).
             params: Optional query parameters.
+            _retried: Internal flag to prevent infinite retry loops.
 
         Returns:
             Parsed JSON response.
@@ -95,12 +100,38 @@ class AusPostApiClient:
                 method, url, headers=headers, params=params
             ) as resp:
                 if resp.status == 401:
+                    body = await resp.text()
+                    _LOGGER.warning(
+                        "AusPost API 401 on %s %s (retried=%s): %s",
+                        method,
+                        path,
+                        _retried,
+                        body[:500],
+                    )
+                    if not _retried:
+                        # Force token refresh and retry once
+                        _LOGGER.debug(
+                            "Forcing token refresh and retrying %s %s",
+                            method,
+                            path,
+                        )
+                        self._auth.invalidate_access_token()
+                        return await self._async_request(
+                            method, path, params=params, _retried=True
+                        )
                     raise AuthenticationError(
-                        "Access token expired or invalid"
+                        f"Access token expired or invalid ({path}): {body[:200]}"
                     )
                 if resp.status == 403:
+                    body = await resp.text()
+                    _LOGGER.warning(
+                        "AusPost API 403 on %s %s: %s",
+                        method,
+                        path,
+                        body[:500],
+                    )
                     raise AuthenticationError(
-                        "Access denied to Australia Post API"
+                        f"Access denied to Australia Post API ({path}): {body[:200]}"
                     )
                 if resp.status == 429:
                     raise RateLimitError("Australia Post API rate limit exceeded")
@@ -131,7 +162,10 @@ class AusPostApiClient:
 
         _LOGGER.debug("Raw organisations response: %s", data)
 
-        # Response may be a list directly or wrapped in an "organisations" key
+        # Response may be wrapped in {"data": {"organisations": [...]}} or
+        # {"organisations": [...]} or be a list directly.
+        if isinstance(data, dict) and "data" in data:
+            data = data["data"]
         org_list = data if isinstance(data, list) else data.get("organisations", [data])
 
         organisations = []
