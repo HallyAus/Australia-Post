@@ -17,6 +17,7 @@ from .auth import AusPostAuth
 from .const import (
     AUTH_METHOD_API_KEY,
     AUTH_METHOD_PASSWORD,
+    AUTH_METHOD_TOKEN,
     CONF_ACCESS_TOKEN,
     CONF_ACCOUNT_NUMBER,
     CONF_AUTH_METHOD,
@@ -27,6 +28,7 @@ from .const import (
     CONF_ID_TOKEN,
     CONF_ORGANISATION_ID,
     CONF_ORGANISATION_NAME,
+    CONF_PARTNERS_TOKEN,
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
@@ -39,6 +41,13 @@ from .exceptions import (
 from .models import Organisation
 
 _LOGGER = logging.getLogger(__name__)
+
+PARTNERS_TOKEN_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_PARTNERS_TOKEN): str,
+        vol.Required(CONF_ACCOUNT_NUMBER): str,
+    }
+)
 
 API_KEY_SCHEMA = vol.Schema(
     {
@@ -72,7 +81,9 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle the initial step: choose authentication method."""
         if user_input is not None:
-            method = user_input.get(CONF_AUTH_METHOD, AUTH_METHOD_API_KEY)
+            method = user_input.get(CONF_AUTH_METHOD, AUTH_METHOD_TOKEN)
+            if method == AUTH_METHOD_TOKEN:
+                return await self.async_step_partners_token()
             if method == AUTH_METHOD_API_KEY:
                 return await self.async_step_api_credentials()
             return await self.async_step_password()
@@ -82,10 +93,11 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_AUTH_METHOD, default=AUTH_METHOD_API_KEY
+                        CONF_AUTH_METHOD, default=AUTH_METHOD_TOKEN
                     ): vol.In(
                         {
-                            AUTH_METHOD_API_KEY: "API Credentials (Recommended)",
+                            AUTH_METHOD_TOKEN: "Partners Token (Recommended)",
+                            AUTH_METHOD_API_KEY: "API Credentials",
                             AUTH_METHOD_PASSWORD: "Email + Password",
                         }
                     ),
@@ -94,7 +106,79 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     # ------------------------------------------------------------------
-    # API credentials flow (client_credentials - recommended)
+    # Partners Token flow (recommended for most users)
+    # ------------------------------------------------------------------
+
+    async def async_step_partners_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle Partners token entry."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            token = user_input[CONF_PARTNERS_TOKEN].strip()
+            account_number = user_input[CONF_ACCOUNT_NUMBER].strip()
+
+            if not token:
+                errors["base"] = "invalid_auth"
+            elif not account_number:
+                errors["base"] = "invalid_auth"
+            else:
+                # Validate the token by making a test API call
+                try:
+                    session = async_create_clientsession(self.hass)
+                    auth = AusPostAuth(session)
+                    auth.set_partners_token(token)
+
+                    api = AusPostApiClient(
+                        session=session,
+                        auth=auth,
+                        account_number=account_number,
+                    )
+                    # Try to fetch shipments as a validation call
+                    await api.async_get_shipments(number_of_shipments=1)
+
+                    await self.async_set_unique_id(account_number)
+                    self._abort_if_unique_id_configured()
+
+                    return self.async_create_entry(
+                        title=f"AusPost - {account_number}",
+                        data={
+                            CONF_AUTH_METHOD: AUTH_METHOD_TOKEN,
+                            CONF_PARTNERS_TOKEN: token,
+                            CONF_ACCOUNT_NUMBER: account_number,
+                            CONF_ACCESS_TOKEN: token,
+                            CONF_REFRESH_TOKEN: "",
+                            CONF_ID_TOKEN: "",
+                            CONF_EXPIRES_AT: 0,
+                            CONF_ORGANISATION_ID: "",
+                            CONF_ORGANISATION_NAME: "",
+                        },
+                    )
+                except AuthenticationError as err:
+                    _LOGGER.warning(
+                        "AusPost Partners token: auth error: %s", err
+                    )
+                    errors["base"] = "invalid_auth"
+                except aiohttp.ClientError as err:
+                    _LOGGER.warning(
+                        "AusPost Partners token: connection error: %s", err
+                    )
+                    errors["base"] = "cannot_connect"
+                except Exception:
+                    _LOGGER.exception(
+                        "Unexpected error validating Partners token"
+                    )
+                    errors["base"] = "unknown"
+
+        return self.async_show_form(
+            step_id="partners_token",
+            data_schema=PARTNERS_TOKEN_SCHEMA,
+            errors=errors,
+        )
+
+    # ------------------------------------------------------------------
+    # API credentials flow (client_credentials)
     # ------------------------------------------------------------------
 
     async def async_step_api_credentials(
@@ -309,9 +393,67 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reauth_entry()
         auth_method = entry.data.get(CONF_AUTH_METHOD, AUTH_METHOD_PASSWORD)
 
+        if auth_method == AUTH_METHOD_TOKEN:
+            return await self.async_step_reauth_partners_token()
         if auth_method == AUTH_METHOD_API_KEY:
             return await self.async_step_reauth_api_credentials()
         return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_partners_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Re-authenticate with a new Partners token."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            token = user_input[CONF_PARTNERS_TOKEN].strip()
+            if not token:
+                errors["base"] = "invalid_auth"
+            else:
+                try:
+                    entry = self._get_reauth_entry()
+                    session = async_create_clientsession(self.hass)
+                    auth = AusPostAuth(session)
+                    auth.set_partners_token(token)
+
+                    api = AusPostApiClient(
+                        session=session,
+                        auth=auth,
+                        account_number=entry.data.get(CONF_ACCOUNT_NUMBER),
+                    )
+                    await api.async_get_shipments(number_of_shipments=1)
+
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data={
+                            **entry.data,
+                            CONF_PARTNERS_TOKEN: token,
+                            CONF_ACCESS_TOKEN: token,
+                        },
+                    )
+                except AuthenticationError as err:
+                    _LOGGER.warning(
+                        "AusPost reauth token: auth error: %s", err
+                    )
+                    errors["base"] = "invalid_auth"
+                except aiohttp.ClientError as err:
+                    _LOGGER.warning(
+                        "AusPost reauth token: connection error: %s", err
+                    )
+                    errors["base"] = "cannot_connect"
+                except Exception:
+                    _LOGGER.exception(
+                        "Unexpected error during token re-authentication"
+                    )
+                    errors["base"] = "unknown"
+
+        return self.async_show_form(
+            step_id="reauth_partners_token",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_PARTNERS_TOKEN): str}
+            ),
+            errors=errors,
+        )
 
     async def async_step_reauth_api_credentials(
         self, user_input: dict[str, Any] | None = None

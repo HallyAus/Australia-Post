@@ -33,12 +33,14 @@ API_PARTNER_ID: Final = "MPB-WEB"
 API_ORG_TYPES: Final = "NCB"
 
 # Authentication method
+AUTH_METHOD_TOKEN: Final = "token"
 AUTH_METHOD_API_KEY: Final = "api_key"
 AUTH_METHOD_PASSWORD: Final = "password"
 
 # Config entry data keys
 CONF_AUTH_METHOD: Final = "auth_method"
 CONF_EMAIL: Final = "email"
+CONF_PARTNERS_TOKEN: Final = "partners_token"
 CONF_CLIENT_ID: Final = "client_id"
 CONF_CLIENT_SECRET: Final = "client_secret"
 CONF_ACCESS_TOKEN: Final = "access_token"
