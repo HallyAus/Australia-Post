@@ -315,22 +315,51 @@ class AusPostAuth:
         return data
 
     @staticmethod
-    def extract_account_from_token(access_token: str) -> str:
-        """Extract account number (apcn) from JWT access token claims.
+    def decode_jwt_claims(token: str) -> dict[str, Any]:
+        """Decode the payload of a JWT token without verification.
 
-        The JWT payload contains 'apcn' (Australia Post Customer Number)
-        which is the account number needed for API requests.
+        Returns the claims dict, or empty dict on failure.
         """
         try:
-            payload = access_token.split(".")[1]
+            parts = token.split(".")
+            if len(parts) != 3:
+                return {}
+            payload = parts[1]
             # Add base64url padding
             padding = 4 - len(payload) % 4
             if padding != 4:
                 payload += "=" * padding
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            return str(claims.get("apcn", ""))
+            return json.loads(base64.urlsafe_b64decode(payload))
         except Exception:
-            return ""
+            return {}
+
+    @staticmethod
+    def extract_account_from_token(*tokens: str) -> str:
+        """Extract account number from JWT token claims.
+
+        Checks multiple tokens (access_token, id_token) and multiple
+        claim names (apcn, cnumber, account_number, accountNumber).
+        Returns the first non-empty match.
+        """
+        _CLAIM_KEYS = ("apcn", "cnumber", "account_number", "accountNumber")
+        for token in tokens:
+            if not token:
+                continue
+            claims = AusPostAuth.decode_jwt_claims(token)
+            if claims:
+                _LOGGER.debug(
+                    "JWT claims keys: %s", list(claims.keys())
+                )
+            for key in _CLAIM_KEYS:
+                val = claims.get(key)
+                if val:
+                    _LOGGER.debug(
+                        "Found account number in JWT claim '%s': %s",
+                        key,
+                        val,
+                    )
+                    return str(val)
+        return ""
 
     @staticmethod
     def generate_authorize_url() -> tuple[str, str]:
