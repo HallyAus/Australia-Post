@@ -197,6 +197,10 @@ class AusPostAuth:
         """Return the token expiry timestamp."""
         return self._expires_at
 
+    def invalidate_access_token(self) -> None:
+        """Mark the current access token as expired so the next call refreshes it."""
+        self._expires_at = 0.0
+
     async def async_get_access_token(self) -> str:
         """Return a valid access token, refreshing if necessary.
 
@@ -437,6 +441,19 @@ class AusPostAuth:
 
         data["expires_at"] = time.time() + data.get("expires_in", 1800)
         self._update_tokens(data)
+
+        # Log token diagnostics (decode JWT payload without verification)
+        access_token = data.get("access_token", "")
+        _LOGGER.debug(
+            "Token exchange success: expires_in=%s, has_refresh=%s, "
+            "has_id_token=%s, token_length=%d",
+            data.get("expires_in"),
+            bool(data.get("refresh_token")),
+            bool(data.get("id_token")),
+            len(access_token),
+        )
+        self._log_jwt_claims(access_token, "access_token")
+
         return data
 
     async def async_login(self, email: str, password: str) -> dict[str, Any]:
@@ -1786,6 +1803,31 @@ class AusPostAuth:
         self._refresh_token = tokens.get("refresh_token", self._refresh_token)
         self._id_token = tokens.get("id_token", self._id_token)
         self._expires_at = tokens.get("expires_at", 0.0)
+
+    @staticmethod
+    def _log_jwt_claims(token: str, label: str) -> None:
+        """Decode and log JWT payload claims for diagnostics (no verification)."""
+        if not token or token.count(".") != 2:
+            _LOGGER.debug("%s is not a JWT (opaque token?)", label)
+            return
+        try:
+            payload_b64 = token.split(".")[1]
+            # Add padding
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += "=" * padding
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+            _LOGGER.debug(
+                "%s JWT claims: aud=%s, iss=%s, scope=%s, exp=%s, azp=%s",
+                label,
+                payload.get("aud"),
+                payload.get("iss"),
+                payload.get("scope"),
+                payload.get("exp"),
+                payload.get("azp"),
+            )
+        except Exception:
+            _LOGGER.debug("%s: could not decode JWT payload", label)
 
     @staticmethod
     def _extract_code_from_redirect(location: str) -> str | None:
