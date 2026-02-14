@@ -124,6 +124,7 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             callback_url = user_input.get("callback_url", "").strip()
+            account_number = user_input.get(CONF_ACCOUNT_NUMBER, "").strip()
 
             # Extract authorization code from the pasted URL
             parsed = urllib.parse.urlparse(callback_url)
@@ -132,6 +133,8 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
 
             if not codes:
                 errors["base"] = "no_auth_code"
+            elif not account_number:
+                errors["base"] = "missing_account_number"
             else:
                 try:
                     session = async_create_clientsession(self.hass)
@@ -140,56 +143,12 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
                         codes[0], self._code_verifier
                     )
 
-                    # Fetch organisations
-                    api = AusPostApiClient(session=session, auth=auth)
-                    organisations = await api.async_get_organisations()
+                    await self.async_set_unique_id(account_number)
+                    self._abort_if_unique_id_configured()
 
-                    # Fallback: extract account number from JWT
-                    # (check both access_token and id_token)
-                    jwt_account = AusPostAuth.extract_account_from_token(
-                        tokens["access_token"],
-                        tokens.get("id_token", ""),
-                    )
-                    _LOGGER.debug(
-                        "Browser auth: got %d org(s), JWT apcn=%s",
-                        len(organisations),
-                        jwt_account,
-                    )
-
-                    # Ensure each org has an account number
-                    for org in organisations:
-                        if not org.account_number and jwt_account:
-                            org.account_number = jwt_account
-
-                    if not organisations:
-                        errors["base"] = "no_organisations"
-                    elif len(organisations) == 1:
-                        org = organisations[0]
-                        account_num = (
-                            org.account_number or jwt_account
-                        )
-                        unique_id = account_num or org.organisation_id
-                        await self.async_set_unique_id(unique_id)
-                        self._abort_if_unique_id_configured()
-
-                        return self.async_create_entry(
-                            title=f"AusPost - {org.name}",
-                            data={
-                                CONF_AUTH_METHOD: AUTH_METHOD_PASSWORD,
-                                CONF_EMAIL: "",
-                                CONF_ACCESS_TOKEN: tokens["access_token"],
-                                CONF_REFRESH_TOKEN: tokens.get(
-                                    "refresh_token", ""
-                                ),
-                                CONF_ID_TOKEN: tokens.get("id_token", ""),
-                                CONF_EXPIRES_AT: tokens["expires_at"],
-                                CONF_ACCOUNT_NUMBER: account_num,
-                                CONF_ORGANISATION_ID: org.organisation_id,
-                                CONF_ORGANISATION_NAME: org.name,
-                            },
-                        )
-                    else:
-                        self._token_data = {
+                    return self.async_create_entry(
+                        title=f"AusPost - {account_number}",
+                        data={
                             CONF_AUTH_METHOD: AUTH_METHOD_PASSWORD,
                             CONF_EMAIL: "",
                             CONF_ACCESS_TOKEN: tokens["access_token"],
@@ -198,9 +157,11 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
                             ),
                             CONF_ID_TOKEN: tokens.get("id_token", ""),
                             CONF_EXPIRES_AT: tokens["expires_at"],
-                        }
-                        self._organisations = organisations
-                        return await self.async_step_select_organisation()
+                            CONF_ACCOUNT_NUMBER: account_number,
+                            CONF_ORGANISATION_ID: "",
+                            CONF_ORGANISATION_NAME: "",
+                        },
+                    )
 
                 except AbortFlow:
                     raise
@@ -226,7 +187,10 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="browser_auth",
             data_schema=vol.Schema(
-                {vol.Required("callback_url"): str}
+                {
+                    vol.Required(CONF_ACCOUNT_NUMBER): str,
+                    vol.Required("callback_url"): str,
+                }
             ),
             errors=errors,
             description_placeholders={

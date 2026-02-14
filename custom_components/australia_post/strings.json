@@ -10,8 +10,9 @@
       },
       "browser_auth": {
         "title": "Browser Login",
-        "description": "1. [Click here to open AusPost login]({authorize_url})\n2. Log in with your MyPost Business email and password\n3. After login, copy the full URL from your browser's address bar\n4. Paste it below",
+        "description": "1. Enter your Account Number (found in MyPost Business under Business Details)\n2. [Click here to open AusPost login]({authorize_url})\n3. Log in with your MyPost Business email and password\n4. After login, copy the full URL from your browser's address bar\n5. Paste it below",
         "data": {
+          "account_number": "Account Number",
           "callback_url": "Paste the URL from your browser here"
         }
       },
@@ -75,6 +76,7 @@
       "cannot_connect": "Unable to connect to Australia Post.",
       "cloudflare_blocked": "Australia Post login blocked by Cloudflare bot protection. Consider using API Credentials instead.",
       "rate_limited": "Too many login attempts. Please wait and try again.",
+      "missing_account_number": "Account number is required. You can find it in MyPost Business under Business Details.",
       "no_auth_code": "No authorization code found in the URL. Make sure you copied the full URL from your browser after logging in.",
       "no_organisations": "No organisations found for this account.",
       "unknown": "An unexpected error occurred."
