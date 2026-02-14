@@ -62,11 +62,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             expires_at=entry.data[CONF_EXPIRES_AT],
         )
 
-    # Create API client
+    # Create API client — fall back to extracting account from JWT if needed
+    account_number = entry.data.get(CONF_ACCOUNT_NUMBER)
+    if not account_number and entry.data.get(CONF_ACCESS_TOKEN):
+        account_number = AusPostAuth.extract_account_from_token(
+            entry.data[CONF_ACCESS_TOKEN]
+        )
+        _LOGGER.debug(
+            "Account number not in config, extracted from JWT: %s",
+            account_number,
+        )
+
     api_client = AusPostApiClient(
         session=session,
         auth=auth,
-        account_number=entry.data.get(CONF_ACCOUNT_NUMBER),
+        account_number=account_number,
     )
 
     # Create coordinator
