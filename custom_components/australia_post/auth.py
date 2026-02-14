@@ -314,6 +314,84 @@ class AusPostAuth:
         self._update_tokens(data)
         return data
 
+    @staticmethod
+    def generate_authorize_url() -> tuple[str, str]:
+        """Generate an OAuth2 authorize URL with PKCE for browser login.
+
+        The user opens this URL in their browser, logs in, and pastes
+        the redirect URL back. This bypasses all bot protection because
+        the user's real browser handles the login page.
+
+        Returns:
+            Tuple of (authorize_url, code_verifier).
+        """
+        code_verifier, code_challenge = AusPostAuth._generate_pkce()
+        nonce = (
+            base64.urlsafe_b64encode(secrets.token_bytes(32))
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        params = urllib.parse.urlencode(
+            {
+                "client_id": AUTH0_CLIENT_ID,
+                "response_type": "code",
+                "redirect_uri": AUTH0_REDIRECT_URI,
+                "scope": AUTH0_SCOPES,
+                "audience": AUTH0_AUDIENCE,
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
+                "nonce": nonce,
+                "auth0Client": _AUTH0_CLIENT_INFO,
+            }
+        )
+        return f"{AUTH0_AUTHORIZE_URL}?{params}", code_verifier
+
+    async def async_exchange_code(
+        self, code: str, code_verifier: str
+    ) -> dict[str, Any]:
+        """Exchange an authorization code for tokens using PKCE.
+
+        Args:
+            code: The authorization code from the callback URL.
+            code_verifier: The PKCE code verifier from generate_authorize_url().
+
+        Returns:
+            Dict with access_token, refresh_token, id_token, expires_at.
+        """
+        payload = {
+            "grant_type": "authorization_code",
+            "client_id": AUTH0_CLIENT_ID,
+            "code_verifier": code_verifier,
+            "code": code,
+            "redirect_uri": AUTH0_REDIRECT_URI,
+        }
+        async with self._session.post(
+            AUTH0_TOKEN_URL,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Auth0-Client": _AUTH0_CLIENT_INFO,
+            },
+        ) as resp:
+            if resp.status == 401:
+                raise InvalidCredentialsError(
+                    "Authorization code expired or invalid. Please try again."
+                )
+            if resp.status == 403:
+                raise AuthenticationError(
+                    "Access denied during token exchange"
+                )
+            if resp.status != 200:
+                text = await resp.text()
+                raise AuthenticationError(
+                    f"Token exchange failed (HTTP {resp.status}): {text[:200]}"
+                )
+            data = await resp.json()
+
+        data["expires_at"] = time.time() + data.get("expires_in", 1800)
+        self._update_tokens(data)
+        return data
+
     async def async_login(self, email: str, password: str) -> dict[str, Any]:
         """Perform complete Auth0 login and return token dict.
 

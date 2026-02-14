@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,6 +17,7 @@ from .api import AusPostApiClient
 from .auth import AusPostAuth
 from .const import (
     AUTH_METHOD_API_KEY,
+    AUTH_METHOD_BROWSER,
     AUTH_METHOD_PASSWORD,
     AUTH_METHOD_TOKEN,
     CONF_ACCESS_TOKEN,
@@ -74,13 +76,17 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
         self._token_data: dict[str, Any] = {}
         self._email: str = ""
         self._organisations: list[Organisation] = []
+        self._code_verifier: str = ""
+        self._authorize_url: str = ""
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle the initial step: choose authentication method."""
         if user_input is not None:
-            method = user_input.get(CONF_AUTH_METHOD, AUTH_METHOD_TOKEN)
+            method = user_input.get(CONF_AUTH_METHOD, AUTH_METHOD_BROWSER)
+            if method == AUTH_METHOD_BROWSER:
+                return await self.async_step_browser_auth()
             if method == AUTH_METHOD_TOKEN:
                 return await self.async_step_partners_token()
             if method == AUTH_METHOD_API_KEY:
@@ -92,10 +98,11 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_AUTH_METHOD, default=AUTH_METHOD_TOKEN
+                        CONF_AUTH_METHOD, default=AUTH_METHOD_BROWSER
                     ): vol.In(
                         {
-                            AUTH_METHOD_TOKEN: "Partners Token (Recommended)",
+                            AUTH_METHOD_BROWSER: "Browser Login (Recommended)",
+                            AUTH_METHOD_TOKEN: "Partners Token",
                             AUTH_METHOD_API_KEY: "API Credentials",
                             AUTH_METHOD_PASSWORD: "Email + Password",
                         }
@@ -105,7 +112,106 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     # ------------------------------------------------------------------
-    # Partners Token flow (recommended for most users)
+    # Browser Login flow (recommended — bypasses bot protection)
+    # ------------------------------------------------------------------
+
+    async def async_step_browser_auth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle browser-based OAuth login."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            callback_url = user_input.get("callback_url", "").strip()
+
+            # Extract authorization code from the pasted URL
+            parsed = urllib.parse.urlparse(callback_url)
+            params = urllib.parse.parse_qs(parsed.query)
+            codes = params.get("code")
+
+            if not codes:
+                errors["base"] = "no_auth_code"
+            else:
+                try:
+                    session = async_create_clientsession(self.hass)
+                    auth = AusPostAuth(session)
+                    tokens = await auth.async_exchange_code(
+                        codes[0], self._code_verifier
+                    )
+
+                    # Fetch organisations
+                    api = AusPostApiClient(session=session, auth=auth)
+                    organisations = await api.async_get_organisations()
+
+                    if not organisations:
+                        errors["base"] = "no_organisations"
+                    elif len(organisations) == 1:
+                        org = organisations[0]
+                        await self.async_set_unique_id(org.account_number)
+                        self._abort_if_unique_id_configured()
+
+                        return self.async_create_entry(
+                            title=f"AusPost - {org.name}",
+                            data={
+                                CONF_AUTH_METHOD: AUTH_METHOD_PASSWORD,
+                                CONF_EMAIL: "",
+                                CONF_ACCESS_TOKEN: tokens["access_token"],
+                                CONF_REFRESH_TOKEN: tokens.get(
+                                    "refresh_token", ""
+                                ),
+                                CONF_ID_TOKEN: tokens.get("id_token", ""),
+                                CONF_EXPIRES_AT: tokens["expires_at"],
+                                CONF_ACCOUNT_NUMBER: org.account_number,
+                                CONF_ORGANISATION_ID: org.organisation_id,
+                                CONF_ORGANISATION_NAME: org.name,
+                            },
+                        )
+                    else:
+                        self._token_data = {
+                            CONF_AUTH_METHOD: AUTH_METHOD_PASSWORD,
+                            CONF_EMAIL: "",
+                            CONF_ACCESS_TOKEN: tokens["access_token"],
+                            CONF_REFRESH_TOKEN: tokens.get(
+                                "refresh_token", ""
+                            ),
+                            CONF_ID_TOKEN: tokens.get("id_token", ""),
+                            CONF_EXPIRES_AT: tokens["expires_at"],
+                        }
+                        self._organisations = organisations
+                        return await self.async_step_select_organisation()
+
+                except AuthenticationError as err:
+                    _LOGGER.warning("AusPost browser auth: %s", err)
+                    errors["base"] = "invalid_auth"
+                except aiohttp.ClientError as err:
+                    _LOGGER.warning(
+                        "AusPost browser auth: connection error: %s", err
+                    )
+                    errors["base"] = "cannot_connect"
+                except Exception:
+                    _LOGGER.exception(
+                        "Unexpected error during browser auth"
+                    )
+                    errors["base"] = "unknown"
+
+        # Generate (or regenerate on error) the authorize URL
+        url, code_verifier = AusPostAuth.generate_authorize_url()
+        self._authorize_url = url
+        self._code_verifier = code_verifier
+
+        return self.async_show_form(
+            step_id="browser_auth",
+            data_schema=vol.Schema(
+                {vol.Required("callback_url"): str}
+            ),
+            errors=errors,
+            description_placeholders={
+                "authorize_url": self._authorize_url
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Partners Token flow
     # ------------------------------------------------------------------
 
     async def async_step_partners_token(
