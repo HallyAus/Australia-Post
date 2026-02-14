@@ -128,6 +128,8 @@ class AusPostAuth:
         self._refresh_token: str | None = None
         self._id_token: str | None = None
         self._expires_at: float = 0.0
+        # Partners token (static, no expiry)
+        self._partners_token: str | None = None
         # Client credentials for official API (client_credentials grant)
         self._api_client_id: str | None = None
         self._api_client_secret: str | None = None
@@ -141,6 +143,19 @@ class AusPostAuth:
     ) -> None:
         """Set a callback to be called when tokens are refreshed."""
         self._on_token_refresh = callback
+
+    def set_partners_token(self, token: str) -> None:
+        """Store a Partners token as a static bearer credential.
+
+        Partners tokens are generated from the MyPost Business dashboard
+        under Business Details > eCommerce Partners. They do not expire
+        unless the user disconnects the partner.
+        """
+        self._partners_token = token
+        # Also set as access_token so it's returned by async_get_access_token
+        self._access_token = token
+        # Never expires (set far future)
+        self._expires_at = float("inf")
 
     def set_client_credentials(
         self, client_id: str, client_secret: str
@@ -185,13 +200,18 @@ class AusPostAuth:
     async def async_get_access_token(self) -> str:
         """Return a valid access token, refreshing if necessary.
 
-        Supports two refresh strategies:
-        1. refresh_token grant (email+password login)
-        2. client_credentials grant (API key login - re-requests a new token)
+        Supports three auth strategies:
+        1. Partners token (static, never expires)
+        2. refresh_token grant (email+password login)
+        3. client_credentials grant (API key login - re-requests a new token)
 
         Raises:
             TokenExpiredError: If no valid token and no refresh method available.
         """
+        # Partners token never expires
+        if self._partners_token:
+            return self._partners_token
+
         if self._access_token and time.time() < self._expires_at - 60:
             return self._access_token
 

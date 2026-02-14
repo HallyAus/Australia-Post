@@ -8,6 +8,14 @@
           "auth_method": "Authentication Method"
         }
       },
+      "partners_token": {
+        "title": "Partners Token",
+        "description": "Enter your eCommerce Partners token and account number from MyPost Business (Business Details > eCommerce Partners). This is the recommended method.",
+        "data": {
+          "partners_token": "Partners Token",
+          "account_number": "Account Number"
+        }
+      },
       "api_credentials": {
         "title": "API Credentials",
         "description": "Enter your Shipping & Tracking API credentials from the [Australia Post Developer Centre](https://auspost.com.au/lodgement/api/documentation/). This is the recommended method.",
@@ -23,6 +31,13 @@
         "data": {
           "email": "Email",
           "password": "Password"
+        }
+      },
+      "reauth_partners_token": {
+        "title": "Re-authenticate Partners Token",
+        "description": "Your Partners token is no longer valid. Please enter a new token from MyPost Business (Business Details > eCommerce Partners).",
+        "data": {
+          "partners_token": "Partners Token"
         }
       },
       "reauth_api_credentials": {

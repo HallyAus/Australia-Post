@@ -14,12 +14,14 @@ from .auth import AusPostAuth
 from .const import (
     AUTH_METHOD_API_KEY,
     AUTH_METHOD_PASSWORD,
+    AUTH_METHOD_TOKEN,
     CONF_ACCESS_TOKEN,
     CONF_ACCOUNT_NUMBER,
     CONF_AUTH_METHOD,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_EXPIRES_AT,
+    CONF_PARTNERS_TOKEN,
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
@@ -38,7 +40,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     auth = AusPostAuth(session)
     auth_method = entry.data.get(CONF_AUTH_METHOD, AUTH_METHOD_PASSWORD)
 
-    if auth_method == AUTH_METHOD_API_KEY:
+    if auth_method == AUTH_METHOD_TOKEN:
+        # Partners token: static bearer credential, never expires
+        auth.set_partners_token(entry.data[CONF_PARTNERS_TOKEN])
+    elif auth_method == AUTH_METHOD_API_KEY:
         # API credentials: use client_credentials for automatic token refresh
         auth.set_client_credentials(
             entry.data[CONF_CLIENT_ID],
