@@ -36,6 +36,7 @@ API_ORG_TYPES: Final = "NCB"
 AUTH_METHOD_TOKEN: Final = "token"
 AUTH_METHOD_API_KEY: Final = "api_key"
 AUTH_METHOD_PASSWORD: Final = "password"
+AUTH_METHOD_BROWSER: Final = "browser"
 
 # Config entry data keys
 CONF_AUTH_METHOD: Final = "auth_method"
