@@ -11,6 +11,7 @@ import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD
+from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .api import AusPostApiClient
@@ -144,8 +145,10 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
                     organisations = await api.async_get_organisations()
 
                     # Fallback: extract account number from JWT
+                    # (check both access_token and id_token)
                     jwt_account = AusPostAuth.extract_account_from_token(
-                        tokens["access_token"]
+                        tokens["access_token"],
+                        tokens.get("id_token", ""),
                     )
                     _LOGGER.debug(
                         "Browser auth: got %d org(s), JWT apcn=%s",
@@ -199,6 +202,8 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
                         self._organisations = organisations
                         return await self.async_step_select_organisation()
 
+                except AbortFlow:
+                    raise
                 except AuthenticationError as err:
                     _LOGGER.warning("AusPost browser auth: %s", err)
                     errors["base"] = "invalid_auth"
