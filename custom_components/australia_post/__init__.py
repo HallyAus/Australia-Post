@@ -12,8 +12,13 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import AusPostApiClient
 from .auth import AusPostAuth
 from .const import (
+    AUTH_METHOD_API_KEY,
+    AUTH_METHOD_PASSWORD,
     CONF_ACCESS_TOKEN,
     CONF_ACCOUNT_NUMBER,
+    CONF_AUTH_METHOD,
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET,
     CONF_EXPIRES_AT,
     CONF_REFRESH_TOKEN,
     DOMAIN,
@@ -29,13 +34,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Australia Post from a config entry."""
     session = async_get_clientsession(hass)
 
-    # Initialise auth with stored tokens
+    # Initialise auth based on the authentication method
     auth = AusPostAuth(session)
-    auth.restore_tokens(
-        access_token=entry.data[CONF_ACCESS_TOKEN],
-        refresh_token=entry.data[CONF_REFRESH_TOKEN],
-        expires_at=entry.data[CONF_EXPIRES_AT],
-    )
+    auth_method = entry.data.get(CONF_AUTH_METHOD, AUTH_METHOD_PASSWORD)
+
+    if auth_method == AUTH_METHOD_API_KEY:
+        # API credentials: use client_credentials for automatic token refresh
+        auth.set_client_credentials(
+            entry.data[CONF_CLIENT_ID],
+            entry.data[CONF_CLIENT_SECRET],
+        )
+        auth.restore_tokens(
+            access_token=entry.data[CONF_ACCESS_TOKEN],
+            refresh_token="",
+            expires_at=entry.data[CONF_EXPIRES_AT],
+        )
+    else:
+        # Email + password: use stored refresh_token
+        auth.restore_tokens(
+            access_token=entry.data[CONF_ACCESS_TOKEN],
+            refresh_token=entry.data.get(CONF_REFRESH_TOKEN, ""),
+            expires_at=entry.data[CONF_EXPIRES_AT],
+        )
 
     # Create API client
     api_client = AusPostApiClient(

@@ -6,7 +6,7 @@ from typing import Final
 
 DOMAIN: Final = "australia_post"
 
-# Auth0 configuration
+# Auth0 configuration (web login - email + password flow)
 AUTH0_DOMAIN: Final = "welcome.auspost.com.au"
 AUTH0_CLIENT_ID: Final = "MUFOPrh2WRpo7oBlCuQH5ppUGEGKJJzs"
 AUTH0_AUDIENCE: Final = "https://digitalapi.auspost.com.au/high"
@@ -22,13 +22,25 @@ AUTH0_SCOPES: Final = (
 )
 AUTH0_CONNECTION: Final = "Username-Password-Authentication"
 
+# Official Shipping & Tracking API Auth0 (client_credentials flow)
+API_AUTH0_DOMAIN: Final = "welcome.api1.auspost.com.au"
+API_AUTH0_TOKEN_URL: Final = f"https://{API_AUTH0_DOMAIN}/oauth/token"
+API_AUTH0_AUDIENCE: Final = "https://digitalapi.auspost.com.au/shipping/v2"
+
 # API configuration
 API_BASE_URL: Final = "https://digitalapi.auspost.com.au"
 API_PARTNER_ID: Final = "MPB-WEB"
 API_ORG_TYPES: Final = "NCB"
 
+# Authentication method
+AUTH_METHOD_API_KEY: Final = "api_key"
+AUTH_METHOD_PASSWORD: Final = "password"
+
 # Config entry data keys
+CONF_AUTH_METHOD: Final = "auth_method"
 CONF_EMAIL: Final = "email"
+CONF_CLIENT_ID: Final = "client_id"
+CONF_CLIENT_SECRET: Final = "client_secret"
 CONF_ACCESS_TOKEN: Final = "access_token"
 CONF_REFRESH_TOKEN: Final = "refresh_token"
 CONF_ID_TOKEN: Final = "id_token"
