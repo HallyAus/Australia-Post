@@ -10,10 +10,9 @@
       },
       "partners_token": {
         "title": "Partners Token",
-        "description": "Enter your eCommerce Partners token and account number from MyPost Business (Business Details > eCommerce Partners). This is the recommended method.",
+        "description": "Enter your eCommerce Partners token from MyPost Business (Business Details > eCommerce Partners). This is the recommended method.",
         "data": {
-          "partners_token": "Partners Token",
-          "account_number": "Account Number"
+          "partners_token": "Partners Token"
         }
       },
       "api_credentials": {
