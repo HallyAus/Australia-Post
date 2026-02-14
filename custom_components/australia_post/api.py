@@ -128,6 +128,8 @@ class AusPostApiClient:
             "GET", "/mypostbusiness-organisation/v1/organisations"
         )
 
+        _LOGGER.debug("Raw organisations response: %s", data)
+
         # Response may be a list directly or wrapped in an "organisations" key
         org_list = data if isinstance(data, list) else data.get("organisations", [data])
 

@@ -143,11 +143,30 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
                     api = AusPostApiClient(session=session, auth=auth)
                     organisations = await api.async_get_organisations()
 
+                    # Fallback: extract account number from JWT
+                    jwt_account = AusPostAuth.extract_account_from_token(
+                        tokens["access_token"]
+                    )
+                    _LOGGER.debug(
+                        "Browser auth: got %d org(s), JWT apcn=%s",
+                        len(organisations),
+                        jwt_account,
+                    )
+
+                    # Ensure each org has an account number
+                    for org in organisations:
+                        if not org.account_number and jwt_account:
+                            org.account_number = jwt_account
+
                     if not organisations:
                         errors["base"] = "no_organisations"
                     elif len(organisations) == 1:
                         org = organisations[0]
-                        await self.async_set_unique_id(org.account_number)
+                        account_num = (
+                            org.account_number or jwt_account
+                        )
+                        unique_id = account_num or org.organisation_id
+                        await self.async_set_unique_id(unique_id)
                         self._abort_if_unique_id_configured()
 
                         return self.async_create_entry(
@@ -161,7 +180,7 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
                                 ),
                                 CONF_ID_TOKEN: tokens.get("id_token", ""),
                                 CONF_EXPIRES_AT: tokens["expires_at"],
-                                CONF_ACCOUNT_NUMBER: org.account_number,
+                                CONF_ACCOUNT_NUMBER: account_num,
                                 CONF_ORGANISATION_ID: org.organisation_id,
                                 CONF_ORGANISATION_NAME: org.name,
                             },

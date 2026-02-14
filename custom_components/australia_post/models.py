@@ -18,12 +18,30 @@ class Organisation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Organisation:
-        """Create an Organisation from API response dict."""
+        """Create an Organisation from API response dict.
+
+        Handles both snake_case and camelCase field names from the API.
+        """
         return cls(
-            organisation_id=data.get("organisation_id", ""),
-            name=data.get("name", ""),
-            account_number=data.get("account_number", ""),
-            abn=data.get("abn"),
+            organisation_id=(
+                data.get("organisation_id")
+                or data.get("organisationId")
+                or data.get("id")
+                or ""
+            ),
+            name=(
+                data.get("name")
+                or data.get("organisationName")
+                or ""
+            ),
+            account_number=(
+                data.get("account_number")
+                or data.get("accountNumber")
+                or data.get("apcn")
+                or data.get("customerNumber")
+                or ""
+            ),
+            abn=data.get("abn") or data.get("ABN"),
             band=data.get("band"),
         )
 

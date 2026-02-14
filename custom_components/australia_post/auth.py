@@ -315,6 +315,24 @@ class AusPostAuth:
         return data
 
     @staticmethod
+    def extract_account_from_token(access_token: str) -> str:
+        """Extract account number (apcn) from JWT access token claims.
+
+        The JWT payload contains 'apcn' (Australia Post Customer Number)
+        which is the account number needed for API requests.
+        """
+        try:
+            payload = access_token.split(".")[1]
+            # Add base64url padding
+            padding = 4 - len(payload) % 4
+            if padding != 4:
+                payload += "=" * padding
+            claims = json.loads(base64.urlsafe_b64decode(payload))
+            return str(claims.get("apcn", ""))
+        except Exception:
+            return ""
+
+    @staticmethod
     def generate_authorize_url() -> tuple[str, str]:
         """Generate an OAuth2 authorize URL with PKCE for browser login.
 
