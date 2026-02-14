@@ -45,7 +45,6 @@ _LOGGER = logging.getLogger(__name__)
 PARTNERS_TOKEN_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_PARTNERS_TOKEN): str,
-        vol.Required(CONF_ACCOUNT_NUMBER): str,
     }
 )
 
@@ -117,44 +116,53 @@ class AusPostConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             token = user_input[CONF_PARTNERS_TOKEN].strip()
-            account_number = user_input[CONF_ACCOUNT_NUMBER].strip()
 
             if not token:
                 errors["base"] = "invalid_auth"
-            elif not account_number:
-                errors["base"] = "invalid_auth"
             else:
-                # Validate the token by making a test API call
+                # Validate the token and fetch organisation info
                 try:
                     session = async_create_clientsession(self.hass)
                     auth = AusPostAuth(session)
                     auth.set_partners_token(token)
 
-                    api = AusPostApiClient(
-                        session=session,
-                        auth=auth,
-                        account_number=account_number,
-                    )
-                    # Try to fetch shipments as a validation call
-                    await api.async_get_shipments(number_of_shipments=1)
+                    api = AusPostApiClient(session=session, auth=auth)
+                    organisations = await api.async_get_organisations()
 
-                    await self.async_set_unique_id(account_number)
-                    self._abort_if_unique_id_configured()
+                    if not organisations:
+                        errors["base"] = "no_organisations"
+                    elif len(organisations) == 1:
+                        org = organisations[0]
+                        await self.async_set_unique_id(org.account_number)
+                        self._abort_if_unique_id_configured()
 
-                    return self.async_create_entry(
-                        title=f"AusPost - {account_number}",
-                        data={
+                        return self.async_create_entry(
+                            title=f"AusPost - {org.name}",
+                            data={
+                                CONF_AUTH_METHOD: AUTH_METHOD_TOKEN,
+                                CONF_PARTNERS_TOKEN: token,
+                                CONF_ACCOUNT_NUMBER: org.account_number,
+                                CONF_ACCESS_TOKEN: token,
+                                CONF_REFRESH_TOKEN: "",
+                                CONF_ID_TOKEN: "",
+                                CONF_EXPIRES_AT: 0,
+                                CONF_ORGANISATION_ID: org.organisation_id,
+                                CONF_ORGANISATION_NAME: org.name,
+                            },
+                        )
+                    else:
+                        # Multiple orgs — let user pick
+                        self._token_data = {
                             CONF_AUTH_METHOD: AUTH_METHOD_TOKEN,
                             CONF_PARTNERS_TOKEN: token,
-                            CONF_ACCOUNT_NUMBER: account_number,
                             CONF_ACCESS_TOKEN: token,
                             CONF_REFRESH_TOKEN: "",
                             CONF_ID_TOKEN: "",
                             CONF_EXPIRES_AT: 0,
-                            CONF_ORGANISATION_ID: "",
-                            CONF_ORGANISATION_NAME: "",
-                        },
-                    )
+                        }
+                        self._organisations = organisations
+                        return await self.async_step_select_organisation()
+
                 except AuthenticationError as err:
                     _LOGGER.warning(
                         "AusPost Partners token: auth error: %s", err
