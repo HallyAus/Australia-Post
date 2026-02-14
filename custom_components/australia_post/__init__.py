@@ -65,6 +65,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Create API client — fall back to extracting account from JWT if needed
     account_number = entry.data.get(CONF_ACCOUNT_NUMBER)
+    _LOGGER.debug(
+        "Config entry data keys: %s, account_number=%r",
+        list(entry.data.keys()),
+        account_number,
+    )
     if not account_number:
         account_number = AusPostAuth.extract_account_from_token(
             entry.data.get(CONF_ACCESS_TOKEN, ""),

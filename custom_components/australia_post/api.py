@@ -83,10 +83,11 @@ class AusPostApiClient:
         headers = await self._async_get_headers()
 
         _LOGGER.debug(
-            "API request: %s %s (token=%s)",
+            "API request: %s %s (token=%s, account-number=%s)",
             method,
             path,
             _mask_token(headers.get("Authorization", "")[-20:]),
+            headers.get("account-number", "<NOT SET>"),
         )
 
         try:
