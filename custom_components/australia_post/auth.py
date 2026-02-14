@@ -18,6 +18,8 @@ from typing import Any, Callable, Coroutine
 import aiohttp
 
 from .const import (
+    API_AUTH0_AUDIENCE,
+    API_AUTH0_TOKEN_URL,
     AUTH0_AUDIENCE,
     AUTH0_AUTHORIZE_URL,
     AUTH0_CLIENT_ID,
@@ -126,6 +128,9 @@ class AusPostAuth:
         self._refresh_token: str | None = None
         self._id_token: str | None = None
         self._expires_at: float = 0.0
+        # Client credentials for official API (client_credentials grant)
+        self._api_client_id: str | None = None
+        self._api_client_secret: str | None = None
         self._on_token_refresh: (
             Callable[[dict[str, Any]], Coroutine[Any, Any, None]] | None
         ) = None
@@ -136,6 +141,18 @@ class AusPostAuth:
     ) -> None:
         """Set a callback to be called when tokens are refreshed."""
         self._on_token_refresh = callback
+
+    def set_client_credentials(
+        self, client_id: str, client_secret: str
+    ) -> None:
+        """Store API client credentials for automatic token refresh.
+
+        When set, the auth handler will use the client_credentials grant
+        to obtain new access tokens when the current one expires, instead
+        of requiring a refresh_token.
+        """
+        self._api_client_id = client_id
+        self._api_client_secret = client_secret
 
     def restore_tokens(
         self,
@@ -168,21 +185,114 @@ class AusPostAuth:
     async def async_get_access_token(self) -> str:
         """Return a valid access token, refreshing if necessary.
 
+        Supports two refresh strategies:
+        1. refresh_token grant (email+password login)
+        2. client_credentials grant (API key login - re-requests a new token)
+
         Raises:
-            TokenExpiredError: If no valid token and no refresh token available.
+            TokenExpiredError: If no valid token and no refresh method available.
         """
         if self._access_token and time.time() < self._expires_at - 60:
             return self._access_token
 
         if self._refresh_token:
-            _LOGGER.debug("Access token expired, refreshing")
+            _LOGGER.debug("Access token expired, refreshing via refresh_token")
             tokens = await self.async_refresh_token(self._refresh_token)
             self._update_tokens(tokens)
             if self._on_token_refresh:
                 await self._on_token_refresh(tokens)
             return self._access_token  # type: ignore[return-value]
 
-        raise TokenExpiredError("No valid token and no refresh token available")
+        if self._api_client_id and self._api_client_secret:
+            _LOGGER.debug(
+                "Access token expired, refreshing via client_credentials"
+            )
+            tokens = await self.async_login_client_credentials(
+                self._api_client_id, self._api_client_secret
+            )
+            if self._on_token_refresh:
+                await self._on_token_refresh(tokens)
+            return self._access_token  # type: ignore[return-value]
+
+        raise TokenExpiredError("No valid token and no refresh method available")
+
+    # ------------------------------------------------------------------
+    # Official API: client_credentials grant
+    # ------------------------------------------------------------------
+
+    async def async_login_client_credentials(
+        self, client_id: str, client_secret: str
+    ) -> dict[str, Any]:
+        """Authenticate using the official Shipping & Tracking API credentials.
+
+        Uses OAuth2 client_credentials grant against the official API Auth0
+        domain (welcome.api1.auspost.com.au) which does NOT have Cloudflare
+        bot protection.
+
+        Args:
+            client_id: API client ID from Australia Post Developer Centre.
+            client_secret: API client secret.
+
+        Returns:
+            Dict with access_token, expires_in, expires_at, token_type.
+        """
+        payload = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "audience": API_AUTH0_AUDIENCE,
+            "grant_type": "client_credentials",
+        }
+
+        _LOGGER.debug("AusPost API: requesting token via client_credentials")
+
+        async with self._session.post(
+            API_AUTH0_TOKEN_URL,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        ) as resp:
+            if resp.status == 401:
+                body = await resp.text()
+                _LOGGER.warning(
+                    "AusPost API client_credentials: HTTP 401: %s",
+                    body[:200],
+                )
+                raise InvalidCredentialsError(
+                    "Invalid API client_id or client_secret"
+                )
+            if resp.status == 403:
+                body = await resp.text()
+                _LOGGER.warning(
+                    "AusPost API client_credentials: HTTP 403: %s",
+                    body[:200],
+                )
+                raise InvalidCredentialsError(
+                    "Access denied - check API client credentials"
+                )
+            if resp.status == 429:
+                raise RateLimitError("API rate limit exceeded")
+            if resp.status != 200:
+                body = await resp.text()
+                _LOGGER.error(
+                    "AusPost API client_credentials: HTTP %s: %s",
+                    resp.status,
+                    body[:200],
+                )
+                raise AuthenticationError(
+                    f"API token request failed (HTTP {resp.status})"
+                )
+            data = await resp.json()
+
+        data["expires_at"] = time.time() + data.get("expires_in", 14400)
+        # client_credentials doesn't return refresh_token
+        data.setdefault("refresh_token", "")
+
+        _LOGGER.debug(
+            "AusPost API: token obtained, expires_in=%s",
+            data.get("expires_in"),
+        )
+
+        self._update_tokens(data)
+        return data
 
     async def async_login(self, email: str, password: str) -> dict[str, Any]:
         """Perform complete Auth0 login and return token dict.

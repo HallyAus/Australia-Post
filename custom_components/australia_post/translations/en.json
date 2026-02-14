@@ -3,10 +3,34 @@
     "step": {
       "user": {
         "title": "Australia Post MyPost Business",
-        "description": "Enter your MyPost Business credentials. Your password is used only for initial authentication and is not stored.",
+        "description": "Choose how to authenticate with Australia Post.",
+        "data": {
+          "auth_method": "Authentication Method"
+        }
+      },
+      "api_credentials": {
+        "title": "API Credentials",
+        "description": "Enter your Shipping & Tracking API credentials from the [Australia Post Developer Centre](https://auspost.com.au/lodgement/api/documentation/). This is the recommended method.",
+        "data": {
+          "client_id": "Client ID",
+          "client_secret": "Client Secret",
+          "account_number": "Account Number"
+        }
+      },
+      "password": {
+        "title": "Email + Password Login",
+        "description": "Enter your MyPost Business credentials. Your password is used only for initial authentication and is not stored. Note: this method may be blocked by Cloudflare bot protection.",
         "data": {
           "email": "Email",
           "password": "Password"
+        }
+      },
+      "reauth_api_credentials": {
+        "title": "Re-authenticate API Credentials",
+        "description": "Your API credentials need to be updated.",
+        "data": {
+          "client_id": "Client ID",
+          "client_secret": "Client Secret"
         }
       },
       "reauth_confirm": {
@@ -26,9 +50,9 @@
       }
     },
     "error": {
-      "invalid_auth": "Invalid email or password.",
+      "invalid_auth": "Invalid credentials. Please check your client ID, client secret, email or password.",
       "cannot_connect": "Unable to connect to Australia Post.",
-      "cloudflare_blocked": "Australia Post login blocked by Cloudflare bot protection. Please try again later or check the integration logs for details.",
+      "cloudflare_blocked": "Australia Post login blocked by Cloudflare bot protection. Consider using API Credentials instead.",
       "rate_limited": "Too many login attempts. Please wait and try again.",
       "no_organisations": "No organisations found for this account.",
       "unknown": "An unexpected error occurred."
