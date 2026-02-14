@@ -13,7 +13,7 @@ AUTH0_AUDIENCE: Final = "https://digitalapi.auspost.com.au/high"
 AUTH0_AUTHORIZE_URL: Final = f"https://{AUTH0_DOMAIN}/authorize"
 AUTH0_TOKEN_URL: Final = f"https://{AUTH0_DOMAIN}/oauth/token"
 AUTH0_LOGIN_URL: Final = f"https://{AUTH0_DOMAIN}/u/login"
-AUTH0_REDIRECT_URI: Final = "https://auspost.com.au/mypost-business/shipping-and-tracking/"
+AUTH0_REDIRECT_URI: Final = "https://auspost.com.au/mypost-business/dashboard/"
 AUTH0_SCOPES: Final = (
     "openid profile email offline_access "
     "https://scopes.auspost.com.au/auth/sending/v1/mpb-organisation "

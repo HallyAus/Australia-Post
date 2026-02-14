@@ -317,9 +317,12 @@ class AusPostAuth:
     async def async_login(self, email: str, password: str) -> dict[str, Any]:
         """Perform complete Auth0 login and return token dict.
 
-        Tries ROPC (Resource Owner Password Credentials) first as the simpler
-        path. Falls back to browser-simulated New Universal Login flow if ROPC
-        is not available.
+        Tries multiple auth strategies in order of reliability:
+        1. ROPC (Resource Owner Password Credentials) - simplest
+        2. password-realm grant - extended ROPC with connection/realm
+        3. Cross-origin authentication (/co/authenticate) - API-based, no
+           browser simulation needed, bypasses Cloudflare bot protection
+        4. Browser simulation with curl_cffi (Chrome TLS impersonation)
 
         Args:
             email: User's email address.
@@ -333,14 +336,37 @@ class AusPostAuth:
             RateLimitError: If rate limited by Auth0.
             AuthenticationError: For other auth failures.
         """
-        # Try ROPC first (simpler, but may not be enabled for SPA clients)
+        # 1. Try ROPC first (simplest, but may not be enabled for SPA clients)
         ropc_result = await self._try_ropc_login(email, password)
         if ropc_result is not None:
             _LOGGER.warning("AusPost login: ROPC succeeded")
             self._update_tokens(ropc_result)
             return ropc_result
 
-        _LOGGER.warning("AusPost login: ROPC not available, trying browser flow")
+        _LOGGER.warning("AusPost login: ROPC not available")
+
+        # 2. Try password-realm grant (ROPC variant with realm/connection)
+        realm_result = await self._try_password_realm(email, password)
+        if realm_result is not None:
+            _LOGGER.warning("AusPost login: password-realm succeeded")
+            self._update_tokens(realm_result)
+            return realm_result
+
+        _LOGGER.warning("AusPost login: password-realm not available")
+
+        # 3. Try Auth0 cross-origin authentication (bypasses Cloudflare)
+        co_result = await self._try_co_authenticate(email, password)
+        if co_result is not None:
+            _LOGGER.warning("AusPost login: cross-origin auth succeeded")
+            self._update_tokens(co_result)
+            return co_result
+
+        _LOGGER.warning(
+            "AusPost login: cross-origin auth not available, "
+            "falling back to browser simulation"
+        )
+
+        # 4. Fall back to browser simulation
         return await self._browser_simulation_login(email, password)
 
     async def _try_ropc_login(
@@ -391,6 +417,310 @@ class AusPostAuth:
         except aiohttp.ClientError as err:
             _LOGGER.warning("AusPost ROPC: connection error: %s", err)
             return None
+
+    async def _try_password_realm(
+        self, email: str, password: str
+    ) -> dict[str, Any] | None:
+        """Attempt Auth0 password-realm grant type.
+
+        This is an extended ROPC variant that specifies the database
+        connection (realm). It may be enabled even when standard ROPC
+        is not.
+
+        Returns token dict on success, None if not available.
+        """
+        payload = {
+            "grant_type": "http://auth0.com/oauth/grant-type/password-realm",
+            "client_id": AUTH0_CLIENT_ID,
+            "username": email,
+            "password": password,
+            "audience": AUTH0_AUDIENCE,
+            "scope": AUTH0_SCOPES,
+            "realm": AUTH0_CONNECTION,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Auth0-Client": _AUTH0_CLIENT_INFO,
+        }
+        try:
+            async with self._session.post(
+                AUTH0_TOKEN_URL, json=payload, headers=headers
+            ) as resp:
+                _LOGGER.warning("AusPost password-realm: HTTP %s", resp.status)
+                if resp.status == 200:
+                    data = await resp.json()
+                    data["expires_at"] = time.time() + data.get(
+                        "expires_in", 1800
+                    )
+                    return data
+                if resp.status == 401:
+                    body = await resp.text()
+                    if "invalid_grant" in body or "Wrong" in body:
+                        raise InvalidCredentialsError(
+                            "Invalid email or password"
+                        )
+                    raise InvalidCredentialsError("Invalid email or password")
+                if resp.status == 429:
+                    raise RateLimitError(
+                        "Too many login attempts. Please wait and try again."
+                    )
+                body = await resp.text()
+                _LOGGER.warning(
+                    "AusPost password-realm: HTTP %s: %s",
+                    resp.status,
+                    body[:500],
+                )
+                return None
+        except (InvalidCredentialsError, RateLimitError):
+            raise
+        except aiohttp.ClientError as err:
+            _LOGGER.warning(
+                "AusPost password-realm: connection error: %s", err
+            )
+            return None
+
+    async def _try_co_authenticate(
+        self, email: str, password: str
+    ) -> dict[str, Any] | None:
+        """Attempt Auth0 Cross-Origin Authentication.
+
+        Uses the /co/authenticate API endpoint to obtain a login_ticket,
+        then exchanges it via /authorize for an authorization code, then
+        exchanges the code for tokens using PKCE.
+
+        This completely bypasses Cloudflare bot protection because
+        /co/authenticate is a JSON API endpoint (not a rendered login
+        page) designed for SPA cross-origin authentication.
+
+        Returns token dict on success, None if not available.
+        """
+        co_url = f"https://{AUTH0_DOMAIN}/co/authenticate"
+
+        jar = aiohttp.CookieJar(unsafe=True)
+        co_session = aiohttp.ClientSession(cookie_jar=jar)
+
+        try:
+            # ----------------------------------------------------------
+            # Step 1: POST /co/authenticate to get a login_ticket
+            # ----------------------------------------------------------
+            async with co_session.post(
+                co_url,
+                json={
+                    "client_id": AUTH0_CLIENT_ID,
+                    "credential_type": (
+                        "http://auth0.com/oauth/grant-type/password-realm"
+                    ),
+                    "username": email,
+                    "password": password,
+                    "realm": AUTH0_CONNECTION,
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://auspost.com.au",
+                    "Auth0-Client": _AUTH0_CLIENT_INFO,
+                },
+            ) as resp:
+                _LOGGER.warning(
+                    "AusPost /co/authenticate: HTTP %s", resp.status
+                )
+
+                if resp.status == 401:
+                    body = await resp.text()
+                    if (
+                        "invalid_user_password" in body
+                        or "Wrong" in body
+                        or "invalid" in body.lower()
+                    ):
+                        raise InvalidCredentialsError(
+                            "Invalid email or password"
+                        )
+                    raise InvalidCredentialsError("Invalid email or password")
+
+                if resp.status == 403:
+                    body = await resp.text()
+                    _LOGGER.warning(
+                        "AusPost /co/authenticate: 403 (may not be enabled): "
+                        "%s",
+                        body[:500],
+                    )
+                    return None
+
+                if resp.status == 429:
+                    raise RateLimitError(
+                        "Too many login attempts. Please wait and try again."
+                    )
+
+                if resp.status != 200:
+                    body = await resp.text()
+                    _LOGGER.warning(
+                        "AusPost /co/authenticate: HTTP %s: %s",
+                        resp.status,
+                        body[:500],
+                    )
+                    return None
+
+                co_data = await resp.json()
+
+            login_ticket = co_data.get("login_ticket")
+            if not login_ticket:
+                _LOGGER.warning(
+                    "AusPost /co/authenticate: no login_ticket in response"
+                )
+                return None
+
+            _LOGGER.warning(
+                "AusPost /co/authenticate: got login_ticket=%s",
+                _mask_token(login_ticket),
+            )
+
+            # ----------------------------------------------------------
+            # Step 2: Generate PKCE parameters
+            # ----------------------------------------------------------
+            code_verifier, code_challenge = self._generate_pkce()
+
+            nonce = (
+                base64.urlsafe_b64encode(secrets.token_bytes(32))
+                .rstrip(b"=")
+                .decode("ascii")
+            )
+
+            # ----------------------------------------------------------
+            # Step 3: GET /authorize with login_ticket and PKCE
+            # Auth0 validates the login_ticket + co_verifier cookie and
+            # redirects to redirect_uri?code=...
+            # ----------------------------------------------------------
+            params = urllib.parse.urlencode(
+                {
+                    "client_id": AUTH0_CLIENT_ID,
+                    "response_type": "code",
+                    "redirect_uri": AUTH0_REDIRECT_URI,
+                    "scope": AUTH0_SCOPES,
+                    "audience": AUTH0_AUDIENCE,
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                    "nonce": nonce,
+                    "auth0Client": _AUTH0_CLIENT_INFO,
+                    "realm": AUTH0_CONNECTION,
+                    "login_ticket": login_ticket,
+                }
+            )
+            url = f"{AUTH0_AUTHORIZE_URL}?{params}"
+
+            auth_code = None
+            for hop in range(10):
+                async with co_session.get(
+                    url,
+                    allow_redirects=False,
+                    headers=_NAV_HEADERS,
+                ) as resp:
+                    _LOGGER.warning(
+                        "AusPost /authorize (login_ticket) hop %d: HTTP %s",
+                        hop,
+                        resp.status,
+                    )
+
+                    if resp.status in (301, 302, 303):
+                        location = resp.headers.get("Location", "")
+                        _LOGGER.warning(
+                            "AusPost /authorize hop %d: Location: %s",
+                            hop,
+                            location[:200] if location else "<empty>",
+                        )
+                        auth_code = self._extract_code_from_redirect(
+                            location
+                        )
+                        if auth_code:
+                            break
+                        if not location:
+                            break
+                        # Resolve relative URLs
+                        if location.startswith("/"):
+                            location = (
+                                f"https://{AUTH0_DOMAIN}{location}"
+                            )
+                        url = location
+                        continue
+
+                    if resp.status == 200:
+                        body = await resp.text()
+                        auth_code = self._extract_code_from_html(body)
+                        if auth_code:
+                            break
+                        resume_url = self._extract_resume_url(body)
+                        if resume_url:
+                            url = resume_url
+                            continue
+                        _LOGGER.warning(
+                            "AusPost /authorize: got 200 (no code found), "
+                            "preview: %s",
+                            body[:500],
+                        )
+                    break
+
+            if not auth_code:
+                _LOGGER.warning(
+                    "AusPost /co/authenticate: could not obtain auth code "
+                    "from /authorize redirect chain"
+                )
+                return None
+
+            _LOGGER.warning(
+                "AusPost /co/authenticate: auth_code=%s",
+                _mask_token(auth_code),
+            )
+
+            # ----------------------------------------------------------
+            # Step 4: Exchange authorization code for tokens
+            # ----------------------------------------------------------
+            async with co_session.post(
+                AUTH0_TOKEN_URL,
+                json={
+                    "grant_type": "authorization_code",
+                    "client_id": AUTH0_CLIENT_ID,
+                    "code_verifier": code_verifier,
+                    "code": auth_code,
+                    "redirect_uri": AUTH0_REDIRECT_URI,
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Auth0-Client": _AUTH0_CLIENT_INFO,
+                },
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    _LOGGER.warning(
+                        "AusPost /co/authenticate token exchange: "
+                        "HTTP %s: %s",
+                        resp.status,
+                        body[:200],
+                    )
+                    return None
+                data = await resp.json()
+
+            data["expires_at"] = time.time() + data.get("expires_in", 1800)
+            _LOGGER.warning(
+                "AusPost /co/authenticate: login complete, "
+                "access_token=%s",
+                _mask_token(data.get("access_token")),
+            )
+            return data
+
+        except (InvalidCredentialsError, RateLimitError):
+            raise
+        except aiohttp.ClientError as err:
+            _LOGGER.warning(
+                "AusPost /co/authenticate: connection error: %s", err
+            )
+            return None
+        except Exception as err:
+            _LOGGER.warning(
+                "AusPost /co/authenticate: unexpected error: %s: %s",
+                type(err).__name__,
+                err,
+            )
+            return None
+        finally:
+            await co_session.close()
 
     async def _browser_simulation_login(
         self, email: str, password: str
