@@ -14,3 +14,9 @@ Keep GitHub recovery visibility and Actions disabled. The public HACS credential
 validation and installed-consumer distribution path remain separate gates; a
 private candidate alone does not certify production installation or public
 release readiness. No new periodic schedule is inferred or enabled here.
+
+Run541 refused the redundant unsupported manifest homeassistant field and the
+literal Developer Centre URL in translation help. Keep the same credential
+source guidance without its inline link; hacs.json retains the2024.1.0 minimum.
+No auth, account API, postal, runtime Python or version change is included.
+A full corrected workflow and exact private candidate proof remain required.

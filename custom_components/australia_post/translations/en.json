@@ -24,7 +24,7 @@
       },
       "api_credentials": {
         "title": "API Credentials",
-        "description": "Enter your Shipping & Tracking API credentials from the [Australia Post Developer Centre](https://auspost.com.au/lodgement/api/documentation/). This is the recommended method.",
+        "description": "Enter your Shipping & Tracking API credentials from the Australia Post Developer Centre. This is the recommended method.",
         "data": {
           "client_id": "Client ID",
           "client_secret": "Client Secret",
